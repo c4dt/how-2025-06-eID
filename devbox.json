@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.12.0/.schema/devbox.schema.json",
+  "packages": [
+    "jupyter@latest",
+    "nodejs@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo Ensuring npm and python packages are installed",
+      "npm ci --silent",
+      "tslab install"
+    ],
+    "scripts": {
+      "jupyter": [
+        "jupyter-lab -y"
+      ],
+      "clean": [
+        "jupyter nbconvert --clear-output --inplace *.ipynb"
+      ]
+    }
+  },
+  "env": {
+    "PATH": "$PATH:$PWD/node_modules/.bin"
+  }
+}
