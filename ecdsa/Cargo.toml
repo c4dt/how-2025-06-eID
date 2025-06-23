@@ -1,0 +1,50 @@
+[package]
+name = "ecdsa"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+equality_across_groups = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+dock_crypto_utils = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+kvac = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+bulletproofs_plus_plus = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+test_utils = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+bbs_plus = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+
+ark-ec = { version = "^0.4.1", default-features = false }
+ark-ff = { version = "^0.4.1", default-features = false }
+ark-secp256r1 = { version = "^0.4.0", default-features = false }
+ark-bls12-381 = { version = "^0.4.0", default-features = false, features = [
+    "curve",
+] }
+ark-serialize = { version = "^0.4.1", default-features = false, features = [
+    "derive",
+] }
+ark-std = { version = "^0.4.0", default-features = false }
+
+rand_core = { version = "0.6", default-features = false }
+blake2 = { version = "0.10", default-features = false }
+
+[features]
+default = ["parallel"]
+std = [
+    "ark-ff/std",
+    "ark-ec/std",
+    "ark-std/std",
+    "ark-serialize/std",
+    "rand_core/std",
+    "dock_crypto_utils/std",
+    "bulletproofs_plus_plus/std",
+    "kvac/std",
+    "test_utils/std",
+]
+parallel = [
+    "std",
+    "ark-ff/parallel",
+    "ark-ec/parallel",
+    "ark-std/parallel",
+    "dock_crypto_utils/parallel",
+    "bulletproofs_plus_plus/parallel",
+    "kvac/parallel",
+    "test_utils/parallel",
+]

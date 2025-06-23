@@ -2,13 +2,15 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.12.0/.schema/devbox.schema.json",
   "packages": [
     "jupyter@latest",
-    "nodejs@latest"
+    "nodejs@latest",
+    "rustup@latest"
   ],
   "shell": {
     "init_hook": [
       "echo Ensuring npm and python packages are installed",
       "npm ci --silent",
-      "tslab install"
+      "tslab install",
+      "if [ -z \"$( find $RUSTUP_HOME | grep toolchains/stable )\" ]; then rustup default stable; fi",
     ],
     "scripts": {
       "jupyter": [
