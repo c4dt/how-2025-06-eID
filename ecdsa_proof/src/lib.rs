@@ -11,7 +11,7 @@
 use ark_bls12_381::{Bls12_381, Fr as BlsFr, G1Affine as BlsG1Affine};
 use ark_ec::short_weierstrass::Affine;
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::BigInt;
+use ark_ff::{BigInt, PrimeField};
 use ark_secp256r1::Fq;
 pub use ark_secp256r1::{Affine as SecP256Affine, Fr as SecP256Fr};
 use ark_std::{
@@ -39,6 +39,7 @@ use equality_across_groups::{
     ec::commitments::from_base_field_to_scalar_field, eq_across_groups::ProofLargeWitness,
 };
 pub use kvac::bbs_sharp::ecdsa;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
 /// The [Issuer] represents here the government issuer in Swiyu, which can create new
@@ -56,7 +57,7 @@ pub struct Issuer {
 /// [ECDSAProof] is correct.
 pub struct Verifier {
     setup: Setup,
-    _certificate: PublicKeyG2<Bls12_381>,
+    certificate: PublicKeyG2<Bls12_381>,
 }
 
 /// The [MobilePhone] represents a holder. It has:
@@ -110,12 +111,11 @@ pub struct Swiyu {
 pub struct Presentation {
     /// The blinded signature of the [VerifiedCredential], which can be verified
     /// using the certificate of the [Issuer].
-    _proof: PoKOfSignatureG1Proof<Bls12_381>,
+    proof: PoKOfSignatureG1Proof<Bls12_381>,
     /// Revealed messages of the [VerifiedCredential], which will prove that the
     /// [Presentation::_messages] are part of the credential.
-    _revealed: BTreeMap<usize, BlsFr>,
-    /// Blinded messages, which are usually not part of the [Presentation]. But in
-    /// our example they represent a blinded version of the holder's public key.
+    revealed: BTreeMap<usize, BlsFr>,
+    /// Blinded messages, which are an addition to the BBS protocol.
     blinded: HashMap<usize, BlsFr>,
     /// Strings used to hash to the messages being _revealed_.
     _messages: HashMap<usize, String>,
@@ -181,22 +181,59 @@ impl Verifier {
     pub fn new(setup: Setup, certificate: PublicKeyG2<Bls12_381>) -> Self {
         Self {
             setup,
-            _certificate: certificate,
+            certificate,
         }
     }
 
-    pub fn create_message(&mut self) -> SecP256Fr {
-        SecP256Fr::rand(&mut self.setup.rng)
+    pub fn create_message(&mut self) -> VerifierMessage {
+        VerifierMessage::new("Verifier")
     }
 
-    pub fn check_proof(&self, message: SecP256Fr, _presentation: Presentation, proof: ECDSAProof) {
-        // presentation._proof.verify(
-        //     &presentation._revealed,
-        //     &message,
-        //     self._certificate,
-        //     self.setup.sig_params_g1,
-        // );
-        proof.verify(message);
+    pub fn check_proof(
+        &self,
+        message: &VerifierMessage,
+        presentation: Presentation,
+        proof: ECDSAProof,
+    ) {
+        presentation
+            .proof
+            .verify(
+                &presentation.revealed,
+                &message.into(),
+                self.certificate.clone(),
+                self.setup.sig_params_g1.clone(),
+            )
+            .expect("Verification of BBS proof failed");
+        proof.verify(message.into());
+    }
+}
+
+pub struct VerifierMessage(String);
+
+impl VerifierMessage {
+    pub fn new(domain: &str) -> Self {
+        Self(format!(
+            "{domain}: Proof request at {}",
+            chrono::Utc::now().to_rfc3339()
+        ))
+    }
+}
+
+impl Into<BlsFr> for &VerifierMessage {
+    fn into(self) -> BlsFr {
+        let hash = Sha256::digest(self.0.as_bytes());
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash[..32]);
+        BlsFr::from_le_bytes_mod_order(&bytes)
+    }
+}
+
+impl Into<SecP256Fr> for &VerifierMessage {
+    fn into(self) -> SecP256Fr {
+        let hash = Sha256::digest(self.0.as_bytes());
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&hash[..32]);
+        SecP256Fr::from_le_bytes_mod_order(&bytes)
     }
 }
 
@@ -236,8 +273,8 @@ impl SecureElement {
         pk
     }
 
-    pub fn sign(&self, id: usize, msg: SecP256Fr) -> ecdsa::Signature {
-        ecdsa::Signature::new_prehashed(&mut StdRng::seed_from_u64(0u64), msg, self.keys[id])
+    pub fn sign(&self, id: usize, msg: &VerifierMessage) -> ecdsa::Signature {
+        ecdsa::Signature::new_prehashed(&mut StdRng::seed_from_u64(0u64), msg.into(), self.keys[id])
     }
 }
 
@@ -257,11 +294,8 @@ impl Swiyu {
         self.vcs = Some(credential);
     }
 
-    pub fn blinded_presentation(&mut self) -> Presentation {
+    pub fn blinded_presentation(&mut self, message: &VerifierMessage) -> Presentation {
         let vc = self.vcs.as_ref().expect("No credential yet!");
-        // TODO: convert message to BlsFr - _message is 4 x u64, and BlsFr::from(_message.0)
-        // probably fails because it's bigger than the modulus of Bls12-381.
-        let message_bls = BlsFr::rand(&mut self.setup.rng);
         // TODO: add blinding here
         let zero_blinding = BlsFr::from(BigInt::zero());
         let proof = PoKOfSignatureG1Protocol::init(
@@ -280,11 +314,11 @@ impl Swiyu {
             ],
         )
         .unwrap()
-        .gen_proof(&message_bls)
+        .gen_proof(&message.into())
         .unwrap();
         Presentation {
-            _proof: proof,
-            _revealed: BTreeMap::new(),
+            proof,
+            revealed: BTreeMap::new(),
             blinded: HashMap::from([
                 (0usize, vc.messages[0].clone()),
                 (1usize, vc.messages[1].clone()),
@@ -369,7 +403,7 @@ impl ECDSAProof {
         holder_pub: SecP256Affine,
         presentation: Presentation,
         signature: ecdsa::Signature,
-        message: SecP256Fr,
+        message: &VerifierMessage,
     ) -> Self {
         // Commit to ECDSA public key on Tom-256 curve
         let comm_pk =
@@ -386,9 +420,9 @@ impl ECDSAProof {
             .comm_key_bls
             .commit(&presentation.blinded[&1], &bls_comm_pk_ry);
 
-        let transformed_sig = TransformedEcdsaSig::new(&signature, message, holder_pub).unwrap();
+        let transformed_sig = TransformedEcdsaSig::new(&signature, message.into(), holder_pub).unwrap();
         transformed_sig
-            .verify_prehashed(message, holder_pub)
+            .verify_prehashed(message.into(), holder_pub)
             .unwrap();
 
         let mut prover_transcript = new_merlin_transcript(b"test");
@@ -398,14 +432,14 @@ impl ECDSAProof {
             &comm_pk.comm,
             &bls_comm_pk_x,
             &bls_comm_pk_y,
-            &message,
+            &message.into(),
         );
 
         let protocol =
             PoKEcdsaSigCommittedPublicKeyProtocol::<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>::init(
                 &mut setup.rng,
                 transformed_sig,
-                message,
+                message.into(),
                 holder_pub,
                 comm_pk.clone(),
                 &setup.comm_key_secp,
@@ -546,13 +580,13 @@ mod test {
         holder.swiyu().add_vc(0, credential);
 
         // Verifier requests a presentation from the holder
-        let message = verifier.create_message();
+        let message = &verifier.create_message();
 
         // Holder creates a blinded presentation, an ECDSA signature, and a proof.
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
-        let presentation = holder.swiyu().blinded_presentation();
-        let signature = holder.secure_element().sign(0, message);
-        let proof = ECDSAProof::new(setup, key_pub, presentation.clone(), signature, message);
+        let presentation = holder.swiyu().blinded_presentation(&message);
+        let signature = holder.secure_element().sign(0, &message);
+        let proof = ECDSAProof::new(setup, key_pub, presentation.clone(), signature, &message);
 
         // Holder sends the proof to the verifier, which checks it.
         verifier.check_proof(message, presentation, proof.clone());
