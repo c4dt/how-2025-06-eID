@@ -49,14 +49,14 @@ use std::collections::{BTreeMap, HashMap};
 /// The certificate of the issuer, the public key, can be used by the [Verifier] to
 /// check that a certificate has been created by the [Issuer]
 pub struct Issuer {
-    setup: Setup,
+    setup: PublicSetup,
     keypair: KeypairG2<Bls12_381>,
 }
 
 /// A [Verifier] in this demo only has to create random messages, and then verify that the
 /// [ECDSAProof] is correct.
 pub struct Verifier {
-    setup: Setup,
+    setup: PublicSetup,
     certificate: PublicKeyG2<Bls12_381>,
 }
 
@@ -69,11 +69,13 @@ pub struct Verifier {
 pub struct MobilePhone {
     secure_element: SecureElement,
     swiyu: Option<Swiyu>,
-    setup: Setup,
+    setup: PublicSetup,
 }
 
 /// A [VerifiedCredential] is created by the [Issuer] and holds the public key of the
 /// [MobilePhone] in a secure way.
+/// We suppose that the first two positions are the x and y value of the holder's
+/// public key.
 /// TODO: also add one or two fields which can be revealed to the verifier.
 pub struct VerifiedCredential {
     // For our example, we only have one msg_fr, which is the public key of the holder.
@@ -81,6 +83,8 @@ pub struct VerifiedCredential {
     messages: Vec<BlsFr>,
     // Signature of the issuer on this credential.
     signature: SignatureG1<Bls12_381>,
+    // Contents of the messages which hold strings
+    message_strings: BTreeMap<usize, String>,
 }
 
 /// The [SecureElement] is a specially hardened part of the [MobilePhone] which can create
@@ -99,7 +103,7 @@ pub struct SecureElement {
 /// [SecureElement] to the [Swiyu] app.
 /// In the same way you'll have to add the [VerifiedCredential] manually.
 pub struct Swiyu {
-    setup: Setup,
+    setup: PublicSetup,
     key_id: Option<usize>,
     vcs: Option<VerifiedCredential>,
 }
@@ -108,17 +112,26 @@ pub struct Swiyu {
 /// a proof that the blinded version has been signed by the [Issuer], and can be
 /// verified by the certificate of the [Issuer].
 #[derive(Clone)]
-pub struct Presentation {
+pub struct BBSPresentation {
     /// The blinded signature of the [VerifiedCredential], which can be verified
     /// using the certificate of the [Issuer].
     proof: PoKOfSignatureG1Proof<Bls12_381>,
     /// Revealed messages of the [VerifiedCredential], which will prove that the
     /// [Presentation::_messages] are part of the credential.
     revealed: BTreeMap<usize, BlsFr>,
-    /// Blinded messages, which are an addition to the BBS protocol.
-    blinded: HashMap<usize, BlsFr>,
     /// Strings used to hash to the messages being _revealed_.
-    _messages: HashMap<usize, String>,
+    _message_strings: HashMap<usize, String>,
+    /// Commitments for the public keys.
+    commitment_pub_x: PublicCommitment,
+    commitment_pub_y: PublicCommitment,
+}
+
+/// Use an enum to show that the commitments can be open, including the random value,
+/// or closed, which is secure.
+#[derive(Clone)]
+pub enum PublicCommitment {
+    Open(BlsFr, BlsG1Affine),
+    Closed(BlsG1Affine),
 }
 
 /// An [ECDSAProof] links the ECDSA signature from the [SecureElement] to the [Presentation::blinded]
@@ -130,13 +143,8 @@ pub struct Presentation {
 /// are actually part of the [VerifiedCredential].
 #[derive(Clone)]
 pub struct ECDSAProof {
-    setup: Setup,
     /// The public key of the holder committed to the Tom256 curve.
     comm_pk: PointCommitment<Tom256Config>,
-    /// A commitment of the x value of the public key of the holder to the BLS12-381 curve.
-    bls_comm_pk_x: BlsG1Affine,
-    /// A commitment of the y value of the public key of the holder to the BLS12-381 curve.
-    bls_comm_pk_y: BlsG1Affine,
     /// A proof that [ECDSAProof::comm_pk] can be used to verify the `message` of the verifier.
     proof: PoKEcdsaSigCommittedPublicKey<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>,
     /// A proof that the x value of the public key of the holder is the same as [ECDSAProof::bls_comm_pk_x]
@@ -146,7 +154,7 @@ pub struct ECDSAProof {
 }
 
 impl Issuer {
-    pub fn new(mut setup: Setup) -> Self {
+    pub fn new(mut setup: PublicSetup) -> Self {
         Self {
             keypair: KeypairG2::<Bls12_381>::generate_using_rng(
                 &mut setup.rng,
@@ -163,7 +171,17 @@ impl Issuer {
     pub fn new_credential(&mut self, key_pub: SecP256Affine) -> VerifiedCredential {
         let pk_x = from_base_field_to_scalar_field::<Fq, BlsFr>(key_pub.x().unwrap());
         let pk_y = from_base_field_to_scalar_field::<Fq, BlsFr>(key_pub.y().unwrap());
-        let messages = vec![pk_x, pk_y];
+        let (first, last) = (format!("123"), format!("456"));
+        let message_strings = BTreeMap::from([
+            (VerifiedCredential::FIELD_FIRSTNAME, first.clone()),
+            (VerifiedCredential::FIELD_LASTNAME, last.clone()),
+        ]);
+        let messages = vec![
+            pk_x,
+            pk_y,
+            (&VerifierMessage(first)).into(),
+            (&VerifierMessage(last)).into(),
+        ];
         VerifiedCredential {
             signature: SignatureG1::<Bls12_381>::new(
                 &mut self.setup.rng,
@@ -173,16 +191,26 @@ impl Issuer {
             )
             .unwrap(),
             messages,
+            message_strings,
         }
     }
 }
 
+impl VerifiedCredential {
+    pub const FIELD_PUB_X: usize = 0;
+    pub const FIELD_PUB_Y: usize = 1;
+    pub const FIELD_FIRSTNAME: usize = 2;
+    pub const FIELD_LASTNAME: usize = 3;
+    pub const FIELD_COUNT: u32 = 4;
+
+    pub fn get_message_str(&self, field: usize) -> Option<String> {
+        return self.message_strings.get(&field).cloned();
+    }
+}
+
 impl Verifier {
-    pub fn new(setup: Setup, certificate: PublicKeyG2<Bls12_381>) -> Self {
-        Self {
-            setup,
-            certificate,
-        }
+    pub fn new(setup: PublicSetup, certificate: PublicKeyG2<Bls12_381>) -> Self {
+        Self { setup, certificate }
     }
 
     pub fn create_message(&mut self) -> VerifierMessage {
@@ -192,7 +220,7 @@ impl Verifier {
     pub fn check_proof(
         &self,
         message: &VerifierMessage,
-        presentation: Presentation,
+        presentation: BBSPresentation,
         proof: ECDSAProof,
     ) {
         presentation
@@ -204,7 +232,7 @@ impl Verifier {
                 self.setup.sig_params_g1.clone(),
             )
             .expect("Verification of BBS proof failed");
-        proof.verify(message.into());
+        proof.verify(self.setup.clone(), message.into(), &presentation);
     }
 }
 
@@ -216,6 +244,10 @@ impl VerifierMessage {
             "{domain}: Proof request at {}",
             chrono::Utc::now().to_rfc3339()
         ))
+    }
+
+    pub fn bls_fr(&self, sub: &str) -> BlsFr {
+        (&VerifierMessage(format!("{}:{sub}", self.0))).into()
     }
 }
 
@@ -238,7 +270,7 @@ impl Into<SecP256Fr> for &VerifierMessage {
 }
 
 impl MobilePhone {
-    pub fn new(setup: Setup) -> Self {
+    pub fn new(setup: PublicSetup) -> Self {
         Self {
             setup,
             secure_element: SecureElement::default(),
@@ -279,7 +311,7 @@ impl SecureElement {
 }
 
 impl Swiyu {
-    pub fn new(setup: Setup) -> Self {
+    pub fn new(setup: PublicSetup) -> Self {
         Self {
             setup,
             key_id: None,
@@ -294,7 +326,7 @@ impl Swiyu {
         self.vcs = Some(credential);
     }
 
-    pub fn blinded_presentation(&mut self, message: &VerifierMessage) -> Presentation {
+    pub fn blinded_presentation(&mut self, message: &VerifierMessage) -> BBSPresentation {
         let vc = self.vcs.as_ref().expect("No credential yet!");
         // TODO: add blinding here
         let zero_blinding = BlsFr::from(BigInt::zero());
@@ -311,26 +343,70 @@ impl Swiyu {
                     message: &vc.messages[1],
                     blinding: zero_blinding,
                 },
+                MessageOrBlinding::BlindMessageRandomly(&vc.messages[2]),
+                MessageOrBlinding::BlindMessageRandomly(&vc.messages[3]),
             ],
         )
         .unwrap()
         .gen_proof(&message.into())
         .unwrap();
-        Presentation {
+
+        BBSPresentation {
             proof,
             revealed: BTreeMap::new(),
-            blinded: HashMap::from([
-                (0usize, vc.messages[0].clone()),
-                (1usize, vc.messages[1].clone()),
-            ]),
-            _messages: HashMap::new(),
+            _message_strings: HashMap::new(),
+            commitment_pub_x: PublicCommitment::from_message(
+                &mut self.setup,
+                &vc.messages[VerifiedCredential::FIELD_PUB_X],
+            ),
+            commitment_pub_y: PublicCommitment::from_message(
+                &mut self.setup,
+                &vc.messages[VerifiedCredential::FIELD_PUB_Y],
+            ),
+        }
+    }
+}
+
+impl PublicCommitment {
+    pub fn from_message(setup: &mut PublicSetup, message: &BlsFr) -> Self {
+        let blinding_factor = BlsFr::rand(&mut setup.rng);
+        Self::Open(
+            blinding_factor,
+            setup.comm_key_bls.commit(message, &blinding_factor),
+        )
+    }
+
+    pub fn close(self) -> Self {
+        match self {
+            PublicCommitment::Open(_, affine) => PublicCommitment::Closed(affine),
+            _ => self,
+        }
+    }
+
+    pub fn rand(&self) -> BlsFr {
+        match self {
+            PublicCommitment::Open(fp, _) => fp.clone(),
+            _ => panic!("No random value in closed commitment"),
+        }
+    }
+
+    pub fn affine(&self) -> BlsG1Affine {
+        match self {
+            PublicCommitment::Open(_, affine) => affine.clone(),
+            PublicCommitment::Closed(affine) => affine.clone(),
+        }
+    }
+
+    pub fn assert_closed(&self) {
+        if let Self::Open(_, _) = self {
+            panic!("PublicCommitment is open and leaks random value!");
         }
     }
 }
 
 // Globally known public values.
 #[derive(Clone)]
-pub struct Setup {
+pub struct PublicSetup {
     sig_params_g1: SignatureParamsG1<Bls12_381>,
     rng: StdRng,
     bpp_setup_params: BppSetupParams<Affine<Tom256Config>>,
@@ -339,7 +415,7 @@ pub struct Setup {
     comm_key_bls: PedersenCommitmentKey<BlsG1Affine>,
 }
 
-impl Setup {
+impl PublicSetup {
     const WITNESS_BIT_SIZE: usize = 64;
     const CHALLENGE_BIT_SIZE: usize = 180;
     const ABORT_PARAM: usize = 8;
@@ -352,13 +428,13 @@ impl Setup {
         let comm_key_tom = PedersenCommitmentKey::<Tom256Affine>::new::<Blake2b512>(b"test2");
 
         // Bulletproofs++ setup
-        let base = Setup::BPP_BASE;
+        let base = PublicSetup::BPP_BASE;
         let mut bpp_setup_params =
             BppSetupParams::<Tom256Affine>::new_for_perfect_range_proof::<Blake2b512>(
                 b"test",
                 base,
-                Setup::WITNESS_BIT_SIZE as u16,
-                Setup::NUM_CHUNKS as u32,
+                PublicSetup::WITNESS_BIT_SIZE as u16,
+                PublicSetup::NUM_CHUNKS as u32,
             );
         bpp_setup_params.G = comm_key_tom.g;
         bpp_setup_params.H_vec[0] = comm_key_tom.h;
@@ -366,7 +442,7 @@ impl Setup {
         Self {
             sig_params_g1: SignatureParamsG1::<Bls12_381>::new::<Blake2b512>(
                 "eid-demo".as_bytes(),
-                2, // x and y coordinates of the holder's public key
+                VerifiedCredential::FIELD_COUNT,
             ),
             rng: StdRng::seed_from_u64(0u64),
             bpp_setup_params,
@@ -387,59 +463,50 @@ impl Setup {
 type ProofEqDL = ProofLargeWitness<
     Tom256Affine,
     BlsG1Affine,
-    { Setup::NUM_CHUNKS },
-    { Setup::WITNESS_BIT_SIZE },
-    { Setup::CHALLENGE_BIT_SIZE },
-    { Setup::ABORT_PARAM },
-    { Setup::RESPONSE_BYTE_SIZE },
-    { Setup::NUM_REPS },
+    { PublicSetup::NUM_CHUNKS },
+    { PublicSetup::WITNESS_BIT_SIZE },
+    { PublicSetup::CHALLENGE_BIT_SIZE },
+    { PublicSetup::ABORT_PARAM },
+    { PublicSetup::RESPONSE_BYTE_SIZE },
+    { PublicSetup::NUM_REPS },
 >;
 
 impl ECDSAProof {
     const NUM_REPS_SCALAR_MULT: usize = 128;
 
     pub fn new(
-        mut setup: Setup,
+        mut setup: PublicSetup,
         holder_pub: SecP256Affine,
-        presentation: Presentation,
-        signature: ecdsa::Signature,
-        message: &VerifierMessage,
+        bbs_presentation: BBSPresentation,
+        ecdsa_signature: ecdsa::Signature,
+        verifier_message: &VerifierMessage,
     ) -> Self {
         // Commit to ECDSA public key on Tom-256 curve
         let comm_pk =
             PointCommitmentWithOpening::new(&mut setup.rng, &holder_pub, &setup.comm_key_tom)
                 .unwrap();
 
-        // Commit to ECDSA public key on BLS12-381 curve
-        let bls_comm_pk_rx = BlsFr::rand(&mut setup.rng);
-        let bls_comm_pk_ry = BlsFr::rand(&mut setup.rng);
-        let bls_comm_pk_x = setup
-            .comm_key_bls
-            .commit(&presentation.blinded[&0], &bls_comm_pk_rx);
-        let bls_comm_pk_y = setup
-            .comm_key_bls
-            .commit(&presentation.blinded[&1], &bls_comm_pk_ry);
-
-        let transformed_sig = TransformedEcdsaSig::new(&signature, message.into(), holder_pub).unwrap();
+        let transformed_sig =
+            TransformedEcdsaSig::new(&ecdsa_signature, verifier_message.into(), holder_pub)
+                .unwrap();
         transformed_sig
-            .verify_prehashed(message.into(), holder_pub)
+            .verify_prehashed(verifier_message.into(), holder_pub)
             .unwrap();
 
         let mut prover_transcript = new_merlin_transcript(b"test");
         setup.append_transcript(&mut prover_transcript);
-        Self::append_transcript_args(
+        Self::append_transcript(
             &mut prover_transcript,
             &comm_pk.comm,
-            &bls_comm_pk_x,
-            &bls_comm_pk_y,
-            &message.into(),
+            &bbs_presentation,
+            &verifier_message.into(),
         );
 
         let protocol =
             PoKEcdsaSigCommittedPublicKeyProtocol::<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>::init(
                 &mut setup.rng,
                 transformed_sig,
-                message.into(),
+                verifier_message.into(),
                 holder_pub,
                 comm_pk.clone(),
                 &setup.comm_key_secp,
@@ -457,10 +524,10 @@ impl ECDSAProof {
             &mut setup.rng,
             &comm_pk.x,
             comm_pk.r_x,
-            bls_comm_pk_rx,
+            bbs_presentation.commitment_pub_x.rand(),
             &setup.comm_key_tom,
             &setup.comm_key_bls,
-            Setup::BPP_BASE,
+            PublicSetup::BPP_BASE,
             setup.bpp_setup_params.clone(),
             &mut prover_transcript,
         )
@@ -471,30 +538,33 @@ impl ECDSAProof {
             &mut setup.rng,
             &comm_pk.y,
             comm_pk.r_y,
-            bls_comm_pk_ry,
+            bbs_presentation.commitment_pub_y.rand(),
             &setup.comm_key_tom,
             &setup.comm_key_bls,
-            Setup::BPP_BASE,
+            PublicSetup::BPP_BASE,
             setup.bpp_setup_params.clone(),
             &mut prover_transcript,
         )
         .unwrap();
 
         Self {
-            setup,
             comm_pk: comm_pk.comm,
-            bls_comm_pk_x,
-            bls_comm_pk_y,
             proof,
             proof_eq_pk_x,
             proof_eq_pk_y,
         }
     }
 
-    pub fn verify(&self, message: SecP256Fr) {
+    pub fn verify(&self, setup: PublicSetup, message: SecP256Fr, presentation: &BBSPresentation) {
+        presentation.assert_closed();
         let mut verifier_transcript = new_merlin_transcript(b"test");
-        self.setup.append_transcript(&mut verifier_transcript);
-        self.append_transcript(&mut verifier_transcript, &message);
+        setup.append_transcript(&mut verifier_transcript);
+        Self::append_transcript(
+            &mut verifier_transcript,
+            &self.comm_pk,
+            presentation,
+            &message,
+        );
         self.proof
             .challenge_contribution(&mut verifier_transcript)
             .unwrap();
@@ -507,18 +577,18 @@ impl ECDSAProof {
                 message,
                 &self.comm_pk,
                 &challenge_verifier,
-                &self.setup.comm_key_secp,
-                &self.setup.comm_key_tom,
+                &setup.comm_key_secp,
+                &setup.comm_key_tom,
             )
             .expect("ECDSA proof failed");
 
         self.proof_eq_pk_x
             .verify(
                 &self.comm_pk.x,
-                &self.bls_comm_pk_x,
-                &self.setup.comm_key_tom,
-                &self.setup.comm_key_bls,
-                &self.setup.bpp_setup_params,
+                &presentation.commitment_pub_x.affine(),
+                &setup.comm_key_tom,
+                &setup.comm_key_bls,
+                &setup.bpp_setup_params,
                 &mut verifier_transcript,
             )
             .expect("DlEQ proof for x position failed");
@@ -526,39 +596,44 @@ impl ECDSAProof {
         self.proof_eq_pk_y
             .verify(
                 &self.comm_pk.y,
-                &self.bls_comm_pk_y,
-                &self.setup.comm_key_tom,
-                &self.setup.comm_key_bls,
-                &self.setup.bpp_setup_params,
+                &presentation.commitment_pub_y.affine(),
+                &setup.comm_key_tom,
+                &setup.comm_key_bls,
+                &setup.bpp_setup_params,
                 &mut verifier_transcript,
             )
             .expect("DlEQ proff for y position failed");
     }
 
-    fn append_transcript<T: Transcript + Clone + Write>(&self, pt: &mut T, message: &SecP256Fr) {
-        Self::append_transcript_args(
-            pt,
-            &self.comm_pk,
-            &self.bls_comm_pk_x,
-            &self.bls_comm_pk_y,
-            message,
-        );
-    }
-
-    fn append_transcript_args<T: Transcript + Clone + Write>(
+    fn append_transcript<T: Transcript + Clone + Write>(
         pt: &mut T,
         comm_pk: &PointCommitment<Tom256Config>,
-        bls_comm_pk_x: &BlsG1Affine,
-        bls_comm_pk_y: &BlsG1Affine,
+        presentation: &BBSPresentation,
         message: &SecP256Fr,
     ) {
         pt.append(b"comm_pk", comm_pk);
-        pt.append(b"bls_comm_pk_x", bls_comm_pk_x);
-        pt.append(b"bls_comm_pk_y", bls_comm_pk_y);
+        pt.append(b"bls_comm_pk_x", &presentation.commitment_pub_x.affine());
+        pt.append(b"bls_comm_pk_y", &presentation.commitment_pub_y.affine());
         pt.append(b"message", message);
     }
 }
 
+impl BBSPresentation {
+    pub fn assert_closed(&self) {
+        self.commitment_pub_x.assert_closed();
+        self.commitment_pub_y.assert_closed();
+    }
+
+    pub fn close(self) -> Self {
+        Self {
+            proof: self.proof,
+            revealed: self.revealed,
+            _message_strings: self._message_strings,
+            commitment_pub_x: self.commitment_pub_x.close(),
+            commitment_pub_y: self.commitment_pub_y.close(),
+        }
+    }
+}
 #[cfg(test)]
 mod test {
     use std::{collections::BTreeMap, error::Error};
@@ -568,7 +643,7 @@ mod test {
     #[test]
     fn sign_verify_msg() -> Result<(), Box<dyn Error>> {
         // Set up parties
-        let setup = Setup::new();
+        let setup = PublicSetup::new();
         let mut issuer = Issuer::new(setup.clone());
         let mut holder = MobilePhone::new(setup.clone());
         let mut verifier = Verifier::new(setup.clone(), issuer.get_certificate());
@@ -587,15 +662,16 @@ mod test {
         let presentation = holder.swiyu().blinded_presentation(&message);
         let signature = holder.secure_element().sign(0, &message);
         let proof = ECDSAProof::new(setup, key_pub, presentation.clone(), signature, &message);
+        let presentation_closed = presentation.close();
 
         // Holder sends the proof to the verifier, which checks it.
-        verifier.check_proof(message, presentation, proof.clone());
+        verifier.check_proof(message, presentation_closed, proof.clone());
         Ok(())
     }
 
     #[test]
     fn verify_bbs() -> Result<(), Box<dyn Error>> {
-        let mut setup = Setup::new();
+        let mut setup = PublicSetup::new();
         let keypair =
             KeypairG2::<Bls12_381>::generate_using_rng(&mut setup.rng, &setup.sig_params_g1);
         let pk_x = BlsFr::rand(&mut setup.rng);
