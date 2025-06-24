@@ -8,57 +8,37 @@
 // - Setup - for common, public, values, like the commitment bases and the BulletProof setup
 // - SignatureProof
 
-use ark_bls12_381::{
-    Bls12_381, Fr as BlsFr, G1Affine as BlsG1Affine, G2Affine as BlsG2Affine, g1, g2,
-};
+use ark_bls12_381::{Bls12_381, Fr as BlsFr, G1Affine as BlsG1Affine};
 use ark_ec::short_weierstrass::Affine;
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{BigInt, BigInteger, Field, PrimeField};
+use ark_ff::BigInt;
 use ark_secp256r1::Fq;
-use ark_secp256r1::{
-    Affine as SecP256Affine, Config as SecP256Config, Fr as SecP256Fr, G_GENERATOR_X, G_GENERATOR_Y,
-};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_secp256r1::{Affine as SecP256Affine, Fr as SecP256Fr};
 use ark_std::{
     UniformRand,
     rand::{SeedableRng, rngs::StdRng},
 };
-use ark_std::{io::Write, ops::Neg, rand::RngCore, vec::Vec};
-use bbs_plus::prelude::{SignatureG1, SignatureG2};
+use ark_std::{io::Write, vec::Vec};
+use bbs_plus::prelude::SignatureG1;
 use bbs_plus::proof::{PoKOfSignatureG1Proof, PoKOfSignatureG1Protocol};
 use bbs_plus::setup::{KeypairG2, PublicKeyG2, SignatureParamsG1};
 use blake2::Blake2b512;
 use bulletproofs_plus_plus::prelude::SetupParams as BppSetupParams;
-use dock_crypto_utils::elgamal::PublicKey;
+use dock_crypto_utils::commitment::PedersenCommitmentKey;
 use dock_crypto_utils::signature::MessageOrBlinding;
-use dock_crypto_utils::transcript::{MerlinTranscript, Transcript, new_merlin_transcript};
-use dock_crypto_utils::{
-    commitment::PedersenCommitmentKey, randomized_mult_checker::RandomizedMultChecker,
-};
+use dock_crypto_utils::transcript::{Transcript, new_merlin_transcript};
 use equality_across_groups::pok_ecdsa_pubkey::{
     PoKEcdsaSigCommittedPublicKey, PoKEcdsaSigCommittedPublicKeyProtocol, TransformedEcdsaSig,
 };
 use equality_across_groups::{
-    ec::commitments::from_base_field_to_scalar_field, eq_across_groups::ProofLargeWitness,
+    ec::commitments::PointCommitmentWithOpening,
+    tom256::{Affine as Tom256Affine, Config as Tom256Config},
 };
 use equality_across_groups::{
-    ec::{
-        commitments::{CommitmentWithOpening, PointCommitment, PointCommitmentWithOpening},
-        sw_point_addition::{PointAdditionProof, PointAdditionProtocol},
-        sw_scalar_mult::{ScalarMultiplicationProof, ScalarMultiplicationProtocol},
-    },
-    error::Error,
-    tom256::{Affine as Tom256Affine, Config as Tom256Config, Fr as Tom256Fr},
+    ec::commitments::from_base_field_to_scalar_field, eq_across_groups::ProofLargeWitness,
 };
 use kvac::bbs_sharp::ecdsa;
-use rand_core::OsRng;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::mem::zeroed;
-use std::time::Instant;
-use test_utils::statistics::statistics;
-
-const SECP_BP: SecP256Affine = SecP256Affine::new_unchecked(G_GENERATOR_X, G_GENERATOR_Y);
 
 pub struct Issuer {
     setup: Setup,
@@ -143,8 +123,8 @@ impl Verifier {
         SecP256Fr::rand(&mut self.setup.rng)
     }
 
-    pub fn check_proof(&self, _message: SecP256Fr, _proof: ECDSAProof) -> bool {
-        false
+    pub fn check_proof(&self, message: SecP256Fr, proof: ECDSAProof) {
+        proof.verify(message);
     }
 }
 
@@ -179,7 +159,7 @@ impl MobilePhone {
 impl SecureElement {
     pub fn create_kp(&mut self) -> (usize, SecP256Affine) {
         let sk = SecP256Fr::rand(&mut StdRng::seed_from_u64(0u64));
-        let pk = (SECP_BP * sk).into_affine();
+        let pk = (ecdsa::Signature::generator() * sk).into_affine();
         self.keys.push(sk);
         (self.keys.len() - 1, pk)
     }
@@ -309,7 +289,12 @@ type ProofEqDL = ProofLargeWitness<
     { Setup::NUM_REPS },
 >;
 
+#[derive(Clone)]
 pub struct ECDSAProof {
+    setup: Setup,
+    comm_pk: PointCommitmentWithOpening<Tom256Config>,
+    bls_comm_pk_x: BlsG1Affine,
+    bls_comm_pk_y: BlsG1Affine,
     proof: PoKEcdsaSigCommittedPublicKey<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>,
     proof_eq_pk_x: ProofEqDL,
     proof_eq_pk_y: ProofEqDL,
@@ -398,14 +383,61 @@ impl ECDSAProof {
         .unwrap();
 
         Self {
+            setup,
+            comm_pk,
+            bls_comm_pk_x,
+            bls_comm_pk_y,
             proof,
             proof_eq_pk_x,
             proof_eq_pk_y,
         }
     }
 
-    pub fn verify(&self) -> bool {
-        todo!()
+    pub fn verify(&self, message: SecP256Fr) {
+        let mut verifier_transcript = new_merlin_transcript(b"test");
+        self.setup.append_transcript(&mut verifier_transcript);
+        verifier_transcript.append(b"comm_pk", &self.comm_pk.comm);
+        verifier_transcript.append(b"bls_comm_pk_x", &self.bls_comm_pk_x);
+        verifier_transcript.append(b"bls_comm_pk_y", &self.bls_comm_pk_y);
+        verifier_transcript.append(b"message", &message);
+        self.proof
+            .challenge_contribution(&mut verifier_transcript)
+            .unwrap();
+
+        let challenge_verifier = verifier_transcript.challenge_scalar(b"challenge");
+
+        // verify_using_randomized_mult_checker can be used like previous test to make it much faster.
+        self.proof
+            .verify(
+                message,
+                &self.comm_pk.comm,
+                &challenge_verifier,
+                &self.setup.comm_key_secp,
+                &self.setup.comm_key_tom,
+            )
+            .expect("ECDSA proof failed");
+
+        self.proof_eq_pk_x
+            .verify(
+                &self.comm_pk.comm.x,
+                &self.bls_comm_pk_x,
+                &self.setup.comm_key_tom,
+                &self.setup.comm_key_bls,
+                &self.setup.bpp_setup_params,
+                &mut verifier_transcript,
+            )
+            .expect("DlEQ proof for x position failed");
+
+        self.proof_eq_pk_y
+            .verify(
+                &self.comm_pk.comm.y,
+                &self.bls_comm_pk_y,
+                &self.setup.comm_key_tom,
+                &self.setup.comm_key_bls,
+                &self.setup.bpp_setup_params,
+                &mut verifier_transcript,
+            )
+            .expect("DlEQ proff for y position failed");
     }
 }
 
@@ -436,10 +468,10 @@ mod test {
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
         let presentation = holder.swiyu().blinded_presentation(&message);
         let signature = holder.secure_element().sign(key_id, message);
-        let proof = ECDSAProof::new(setup, key_pub,  presentation, signature, message); // does this also need the public key?
+        let proof = ECDSAProof::new(setup, key_pub, presentation, signature, message);
 
         // Holder sends the proof to the verifier, which checks it.
-        verifier.check_proof(message, proof);
+        verifier.check_proof(message, proof.clone());
         Ok(())
     }
 }
