@@ -39,13 +39,41 @@ use equality_across_groups::{
     ec::commitments::from_base_field_to_scalar_field, eq_across_groups::ProofLargeWitness,
 };
 pub use kvac::bbs_sharp::ecdsa;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+/// The [Issuer] represents here the government issuer in Swiyu, which can create new
+/// credentials for the Holder ([MobilePhone]s).
+/// Each new credential is bound to the public key sent by the holder.
+/// An [Issuer] has a private key to sign credentials for the holders.
+/// The certificate of the issuer, the public key, can be used by the [Verifier] to
+/// check that a certificate has been created by the [Issuer]
 pub struct Issuer {
     setup: Setup,
     keypair: KeypairG2<Bls12_381>,
 }
 
+/// A [Verifier] in this demo only has to create random messages, and then verify that the
+/// [ECDSAProof] is correct.
+pub struct Verifier {
+    setup: Setup,
+    _certificate: PublicKeyG2<Bls12_381>,
+}
+
+/// The [MobilePhone] represents a holder. It has:
+///
+/// - [MobilePhone::secure_element()] to manage private keys and create signatures
+/// - [MobilePhone::swiyu()] as a simple representation of the Swiyu application
+///
+/// To use the Swiyu app, it first needs to be [MobilePhone::install_swiyu()].
+pub struct MobilePhone {
+    secure_element: SecureElement,
+    swiyu: Option<Swiyu>,
+    setup: Setup,
+}
+
+/// A [VerifiedCredential] is created by the [Issuer] and holds the public key of the
+/// [MobilePhone] in a secure way.
+/// TODO: also add one or two fields which can be revealed to the verifier.
 pub struct VerifiedCredential {
     // For our example, we only have one msg_fr, which is the public key of the holder.
     // Or perhaps we have two, if we need to put the x and y coordinates of the public key.
@@ -54,33 +82,67 @@ pub struct VerifiedCredential {
     signature: SignatureG1<Bls12_381>,
 }
 
-pub struct Verifier {
-    setup: Setup,
-    _certificate: PublicKeyG2<Bls12_381>,
-}
-
-pub struct MobilePhone {
-    secure_element: SecureElement,
-    swiyu: Option<Swiyu>,
-    setup: Setup,
-}
-
+/// The [SecureElement] is a specially hardened part of the [MobilePhone] which can create
+/// keypairs. However, the private key is inaccessible to the applications. An application
+/// can only request a signature from one of the private keys, but not access it directly.
+/// While this makes it much more secure, it makes it also much more difficult to create
+/// useful cryptographic algorithms.
 #[derive(Default)]
 pub struct SecureElement {
     keys: Vec<SecP256Fr>,
 }
 
+/// A simple representation of the [Swiyu] app. It needs to be set up correctly by the
+/// user, which of course usually is done automatically.
+/// But for our example we want to see how the public key gets transferred from the
+/// [SecureElement] to the [Swiyu] app.
+/// In the same way you'll have to add the [VerifiedCredential] manually.
 pub struct Swiyu {
     setup: Setup,
     key_id: Option<usize>,
     vcs: Option<VerifiedCredential>,
 }
 
+/// A [Presentation] is a shortened version of the [VerifiedCredential]. It contains
+/// a proof that the blinded version has been signed by the [Issuer], and can be
+/// verified by the certificate of the [Issuer].
+#[derive(Clone)]
 pub struct Presentation {
+    /// The blinded signature of the [VerifiedCredential], which can be verified
+    /// using the certificate of the [Issuer].
     _proof: PoKOfSignatureG1Proof<Bls12_381>,
-    _revealed: HashMap<usize, BlsFr>,
+    /// Revealed messages of the [VerifiedCredential], which will prove that the
+    /// [Presentation::_messages] are part of the credential.
+    _revealed: BTreeMap<usize, BlsFr>,
+    /// Blinded messages, which are usually not part of the [Presentation]. But in
+    /// our example they represent a blinded version of the holder's public key.
     blinded: HashMap<usize, BlsFr>,
+    /// Strings used to hash to the messages being _revealed_.
     _messages: HashMap<usize, String>,
+}
+
+/// An [ECDSAProof] links the ECDSA signature from the [SecureElement] to the [Presentation::blinded]
+/// messages in zero-knowledge.
+/// The commitments are randomized representations of the holder's public key.
+/// The proofs link these commitments to the message to be signed, and between each other.
+/// TODO: bls_comm_pk_x and bls_comm_pk_y should be in the [Presentation] instead of the
+/// blinded messages. Then we must make sure that we can prove that the blinded messages
+/// are actually part of the [VerifiedCredential].
+#[derive(Clone)]
+pub struct ECDSAProof {
+    setup: Setup,
+    /// The public key of the holder committed to the Tom256 curve.
+    comm_pk: PointCommitment<Tom256Config>,
+    /// A commitment of the x value of the public key of the holder to the BLS12-381 curve.
+    bls_comm_pk_x: BlsG1Affine,
+    /// A commitment of the y value of the public key of the holder to the BLS12-381 curve.
+    bls_comm_pk_y: BlsG1Affine,
+    /// A proof that [ECDSAProof::comm_pk] can be used to verify the `message` of the verifier.
+    proof: PoKEcdsaSigCommittedPublicKey<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>,
+    /// A proof that the x value of the public key of the holder is the same as [ECDSAProof::bls_comm_pk_x]
+    proof_eq_pk_x: ProofEqDL,
+    /// A proof that the y value of the public key of the holder is the same as [ECDSAProof::bls_comm_pk_x]
+    proof_eq_pk_y: ProofEqDL,
 }
 
 impl Issuer {
@@ -127,7 +189,13 @@ impl Verifier {
         SecP256Fr::rand(&mut self.setup.rng)
     }
 
-    pub fn check_proof(&self, message: SecP256Fr, proof: ECDSAProof) {
+    pub fn check_proof(&self, message: SecP256Fr, _presentation: Presentation, proof: ECDSAProof) {
+        // presentation._proof.verify(
+        //     &presentation._revealed,
+        //     &message,
+        //     self._certificate,
+        //     self.setup.sig_params_g1,
+        // );
         proof.verify(message);
     }
 }
@@ -189,7 +257,7 @@ impl Swiyu {
         self.vcs = Some(credential);
     }
 
-    pub fn blinded_presentation(&mut self, _message: &SecP256Fr) -> Presentation {
+    pub fn blinded_presentation(&mut self) -> Presentation {
         let vc = self.vcs.as_ref().expect("No credential yet!");
         // TODO: convert message to BlsFr - _message is 4 x u64, and BlsFr::from(_message.0)
         // probably fails because it's bigger than the modulus of Bls12-381.
@@ -216,7 +284,7 @@ impl Swiyu {
         .unwrap();
         Presentation {
             _proof: proof,
-            _revealed: HashMap::new(),
+            _revealed: BTreeMap::new(),
             blinded: HashMap::from([
                 (0usize, vc.messages[0].clone()),
                 (1usize, vc.messages[1].clone()),
@@ -292,17 +360,6 @@ type ProofEqDL = ProofLargeWitness<
     { Setup::RESPONSE_BYTE_SIZE },
     { Setup::NUM_REPS },
 >;
-
-#[derive(Clone)]
-pub struct ECDSAProof {
-    setup: Setup,
-    comm_pk: PointCommitment<Tom256Config>,
-    bls_comm_pk_x: BlsG1Affine,
-    bls_comm_pk_y: BlsG1Affine,
-    proof: PoKEcdsaSigCommittedPublicKey<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>,
-    proof_eq_pk_x: ProofEqDL,
-    proof_eq_pk_y: ProofEqDL,
-}
 
 impl ECDSAProof {
     const NUM_REPS_SCALAR_MULT: usize = 128;
@@ -470,7 +527,7 @@ impl ECDSAProof {
 
 #[cfg(test)]
 mod test {
-    use std::error::Error;
+    use std::{collections::BTreeMap, error::Error};
 
     use super::*;
 
@@ -493,12 +550,60 @@ mod test {
 
         // Holder creates a blinded presentation, an ECDSA signature, and a proof.
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
-        let presentation = holder.swiyu().blinded_presentation(&message);
+        let presentation = holder.swiyu().blinded_presentation();
         let signature = holder.secure_element().sign(0, message);
-        let proof = ECDSAProof::new(setup, key_pub, presentation, signature, message);
+        let proof = ECDSAProof::new(setup, key_pub, presentation.clone(), signature, message);
 
         // Holder sends the proof to the verifier, which checks it.
-        verifier.check_proof(message, proof.clone());
+        verifier.check_proof(message, presentation, proof.clone());
+        Ok(())
+    }
+
+    #[test]
+    fn verify_bbs() -> Result<(), Box<dyn Error>> {
+        let mut setup = Setup::new();
+        let keypair =
+            KeypairG2::<Bls12_381>::generate_using_rng(&mut setup.rng, &setup.sig_params_g1);
+        let pk_x = BlsFr::rand(&mut setup.rng);
+        // let pk_y = BlsFr::rand(&mut setup.rng);
+        let messages = vec![pk_x, pk_x];
+        let signature = SignatureG1::<Bls12_381>::new(
+            &mut setup.rng,
+            &messages,
+            &keypair.secret_key,
+            &setup.sig_params_g1,
+        )
+        .unwrap();
+
+        let challenge = BlsFr::rand(&mut setup.rng);
+        let zero_blinding = BlsFr::from(BigInt::zero());
+        let proof = PoKOfSignatureG1Protocol::init(
+            &mut setup.rng,
+            &signature,
+            &setup.sig_params_g1,
+            vec![
+                MessageOrBlinding::RevealMessage(&pk_x),
+                // MessageOrBlinding::RevealMessage(&pk_y),
+                MessageOrBlinding::BlindMessageWithConcreteBlinding {
+                    message: &pk_x,
+                    blinding: zero_blinding,
+                },
+            ],
+        )
+        .unwrap()
+        .gen_proof(&challenge)
+        .unwrap();
+
+        proof
+            .verify(
+                &BTreeMap::from([(0usize, pk_x)]),
+                // &BTreeMap::from([(0usize, pk_x), (1usize, pk_y)]),
+                &challenge,
+                keypair.public_key.clone(),
+                setup.sig_params_g1,
+            )
+            .expect("Verify proof");
+
         Ok(())
     }
 }
