@@ -13,7 +13,7 @@ use ark_ec::short_weierstrass::Affine;
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::BigInt;
 use ark_secp256r1::Fq;
-use ark_secp256r1::{Affine as SecP256Affine, Fr as SecP256Fr};
+pub use ark_secp256r1::{Affine as SecP256Affine, Fr as SecP256Fr};
 use ark_std::{
     UniformRand,
     rand::{SeedableRng, rngs::StdRng},
@@ -27,6 +27,7 @@ use bulletproofs_plus_plus::prelude::SetupParams as BppSetupParams;
 use dock_crypto_utils::commitment::PedersenCommitmentKey;
 use dock_crypto_utils::signature::MessageOrBlinding;
 use dock_crypto_utils::transcript::{Transcript, new_merlin_transcript};
+use equality_across_groups::ec::commitments::PointCommitment;
 use equality_across_groups::pok_ecdsa_pubkey::{
     PoKEcdsaSigCommittedPublicKey, PoKEcdsaSigCommittedPublicKeyProtocol, TransformedEcdsaSig,
 };
@@ -37,7 +38,7 @@ use equality_across_groups::{
 use equality_across_groups::{
     ec::commitments::from_base_field_to_scalar_field, eq_across_groups::ProofLargeWitness,
 };
-use kvac::bbs_sharp::ecdsa;
+pub use kvac::bbs_sharp::ecdsa;
 use std::collections::HashMap;
 
 pub struct Issuer {
@@ -55,7 +56,7 @@ pub struct VerifiedCredential {
 
 pub struct Verifier {
     setup: Setup,
-    certificate: PublicKeyG2<Bls12_381>,
+    _certificate: PublicKeyG2<Bls12_381>,
 }
 
 pub struct MobilePhone {
@@ -76,10 +77,10 @@ pub struct Swiyu {
 }
 
 pub struct Presentation {
-    proof: PoKOfSignatureG1Proof<Bls12_381>,
-    revealed: HashMap<usize, BlsFr>,
+    _proof: PoKOfSignatureG1Proof<Bls12_381>,
+    _revealed: HashMap<usize, BlsFr>,
     blinded: HashMap<usize, BlsFr>,
-    messages: HashMap<usize, String>,
+    _messages: HashMap<usize, String>,
 }
 
 impl Issuer {
@@ -116,7 +117,10 @@ impl Issuer {
 
 impl Verifier {
     pub fn new(setup: Setup, certificate: PublicKeyG2<Bls12_381>) -> Self {
-        Self { setup, certificate }
+        Self {
+            setup,
+            _certificate: certificate,
+        }
     }
 
     pub fn create_message(&mut self) -> SecP256Fr {
@@ -157,11 +161,11 @@ impl MobilePhone {
 }
 
 impl SecureElement {
-    pub fn create_kp(&mut self) -> (usize, SecP256Affine) {
+    pub fn create_kp(&mut self) -> SecP256Affine {
         let sk = SecP256Fr::rand(&mut StdRng::seed_from_u64(0u64));
         let pk = (ecdsa::Signature::generator() * sk).into_affine();
         self.keys.push(sk);
-        (self.keys.len() - 1, pk)
+        pk
     }
 
     pub fn sign(&self, id: usize, msg: SecP256Fr) -> ecdsa::Signature {
@@ -211,13 +215,13 @@ impl Swiyu {
         .gen_proof(&message_bls)
         .unwrap();
         Presentation {
-            proof,
-            revealed: HashMap::new(),
+            _proof: proof,
+            _revealed: HashMap::new(),
             blinded: HashMap::from([
                 (0usize, vc.messages[0].clone()),
                 (1usize, vc.messages[1].clone()),
             ]),
-            messages: HashMap::new(),
+            _messages: HashMap::new(),
         }
     }
 }
@@ -292,7 +296,7 @@ type ProofEqDL = ProofLargeWitness<
 #[derive(Clone)]
 pub struct ECDSAProof {
     setup: Setup,
-    comm_pk: PointCommitmentWithOpening<Tom256Config>,
+    comm_pk: PointCommitment<Tom256Config>,
     bls_comm_pk_x: BlsG1Affine,
     bls_comm_pk_y: BlsG1Affine,
     proof: PoKEcdsaSigCommittedPublicKey<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>,
@@ -332,10 +336,13 @@ impl ECDSAProof {
 
         let mut prover_transcript = new_merlin_transcript(b"test");
         setup.append_transcript(&mut prover_transcript);
-        prover_transcript.append(b"comm_pk", &comm_pk.comm);
-        prover_transcript.append(b"bls_comm_pk_x", &bls_comm_pk_x);
-        prover_transcript.append(b"bls_comm_pk_y", &bls_comm_pk_y);
-        prover_transcript.append(b"message", &message);
+        Self::append_transcript_args(
+            &mut prover_transcript,
+            &comm_pk.comm,
+            &bls_comm_pk_x,
+            &bls_comm_pk_y,
+            &message,
+        );
 
         let protocol =
             PoKEcdsaSigCommittedPublicKeyProtocol::<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>::init(
@@ -384,7 +391,7 @@ impl ECDSAProof {
 
         Self {
             setup,
-            comm_pk,
+            comm_pk: comm_pk.comm,
             bls_comm_pk_x,
             bls_comm_pk_y,
             proof,
@@ -396,10 +403,7 @@ impl ECDSAProof {
     pub fn verify(&self, message: SecP256Fr) {
         let mut verifier_transcript = new_merlin_transcript(b"test");
         self.setup.append_transcript(&mut verifier_transcript);
-        verifier_transcript.append(b"comm_pk", &self.comm_pk.comm);
-        verifier_transcript.append(b"bls_comm_pk_x", &self.bls_comm_pk_x);
-        verifier_transcript.append(b"bls_comm_pk_y", &self.bls_comm_pk_y);
-        verifier_transcript.append(b"message", &message);
+        self.append_transcript(&mut verifier_transcript, &message);
         self.proof
             .challenge_contribution(&mut verifier_transcript)
             .unwrap();
@@ -410,7 +414,7 @@ impl ECDSAProof {
         self.proof
             .verify(
                 message,
-                &self.comm_pk.comm,
+                &self.comm_pk,
                 &challenge_verifier,
                 &self.setup.comm_key_secp,
                 &self.setup.comm_key_tom,
@@ -419,7 +423,7 @@ impl ECDSAProof {
 
         self.proof_eq_pk_x
             .verify(
-                &self.comm_pk.comm.x,
+                &self.comm_pk.x,
                 &self.bls_comm_pk_x,
                 &self.setup.comm_key_tom,
                 &self.setup.comm_key_bls,
@@ -430,7 +434,7 @@ impl ECDSAProof {
 
         self.proof_eq_pk_y
             .verify(
-                &self.comm_pk.comm.y,
+                &self.comm_pk.y,
                 &self.bls_comm_pk_y,
                 &self.setup.comm_key_tom,
                 &self.setup.comm_key_bls,
@@ -438,6 +442,29 @@ impl ECDSAProof {
                 &mut verifier_transcript,
             )
             .expect("DlEQ proff for y position failed");
+    }
+
+    fn append_transcript<T: Transcript + Clone + Write>(&self, pt: &mut T, message: &SecP256Fr) {
+        Self::append_transcript_args(
+            pt,
+            &self.comm_pk,
+            &self.bls_comm_pk_x,
+            &self.bls_comm_pk_y,
+            message,
+        );
+    }
+
+    fn append_transcript_args<T: Transcript + Clone + Write>(
+        pt: &mut T,
+        comm_pk: &PointCommitment<Tom256Config>,
+        bls_comm_pk_x: &BlsG1Affine,
+        bls_comm_pk_y: &BlsG1Affine,
+        message: &SecP256Fr,
+    ) {
+        pt.append(b"comm_pk", comm_pk);
+        pt.append(b"bls_comm_pk_x", bls_comm_pk_x);
+        pt.append(b"bls_comm_pk_y", bls_comm_pk_y);
+        pt.append(b"message", message);
     }
 }
 
@@ -457,9 +484,9 @@ mod test {
 
         // Install the swiyu app and add a credential
         holder.install_swiyu();
-        let (key_id, key_pub) = holder.secure_element().create_kp();
+        let key_pub = holder.secure_element().create_kp();
         let credential = issuer.new_credential(key_pub);
-        holder.swiyu().add_vc(key_id, credential);
+        holder.swiyu().add_vc(0, credential);
 
         // Verifier requests a presentation from the holder
         let message = verifier.create_message();
@@ -467,7 +494,7 @@ mod test {
         // Holder creates a blinded presentation, an ECDSA signature, and a proof.
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
         let presentation = holder.swiyu().blinded_presentation(&message);
-        let signature = holder.secure_element().sign(key_id, message);
+        let signature = holder.secure_element().sign(0, message);
         let proof = ECDSAProof::new(setup, key_pub, presentation, signature, message);
 
         // Holder sends the proof to the verifier, which checks it.

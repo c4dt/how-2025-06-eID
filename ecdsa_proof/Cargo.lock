@@ -420,7 +420,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ecdsa"
+name = "ecdsa_proof"
 version = "0.1.0"
 dependencies = [
  "ark-bls12-381",
