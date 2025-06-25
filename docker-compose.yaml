@@ -1,0 +1,8 @@
+services:
+  jupyter:
+    image: ghcr.io/how-2025-06-eid:latest
+    build: .
+    volumes:
+    - .:/code
+    ports:
+    - 8888:8888
