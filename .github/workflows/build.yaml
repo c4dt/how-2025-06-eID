@@ -11,8 +11,9 @@ env:
 jobs:
   build-and-push-image:
     strategy:
-    matrix:
-      os: [ubuntu-latest, macos-latest]
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
