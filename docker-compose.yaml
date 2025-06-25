@@ -1,10 +1,8 @@
 services:
   jupyter:
-    image: ghcr.io/how-2025-06-eid:latest
-    build: .
-    # command: devbox run jupyter-docker
+    image: ghcr.io/c4dt/how-2025-06-eid:latest
     volumes:
     - .:/code/how
-    # - ./devbox.json:/code/devbox.json
     ports:
     - 8888:8888
+    platform: linux/amd64
