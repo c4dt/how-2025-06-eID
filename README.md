@@ -23,6 +23,10 @@ In the afternoon, we present the following:
 2. Potential next developments in electronic identities, specifically related to **holder binding**
 and **unlinkability**
 
+You can find the presentation here:
+
+[Hands-on Workshop Presentation](https://drive.google.com/file/d/1yusj6qYUdv0IbvwsZNE-DOY84PmnTm8I/view?usp=sharing)
+
 ## Swiyu Test Environment
 
 Follow the text in the Jupyter Notebook for [1-Swiyu](./1-Swiyu.ipynb).
