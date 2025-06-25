@@ -1,6 +1,5 @@
 FROM jetpackio/devbox:latest AS build
 
-# Installing your devbox project
 WORKDIR /code
 USER root:root
 RUN mkdir -p /code && chown ${DEVBOX_USER}:${DEVBOX_USER} /code
@@ -16,6 +15,7 @@ RUN nix-store --gc && nix-store --optimise
 
 FROM jetpackio/devbox:latest
 
+WORKDIR /code
 COPY --from=build /nix /nix
 COPY --from=build /code /code
 COPY --from=build /home /home
