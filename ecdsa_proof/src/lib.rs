@@ -27,12 +27,14 @@ use ark_bls12_381::{Bls12_381, Fr as BlsFr, G1Affine as BlsG1Affine};
 use ark_ec::{AffineRepr, CurveGroup, short_weierstrass::Affine};
 use ark_ff::PrimeField;
 use ark_secp256r1::{Affine as SecP256Affine, Fq, Fr as SecP256Fr};
+use ark_serialize::{CanonicalSerialize, Compress, SerializationError};
 use ark_std::{
     UniformRand, Zero,
     io::Write,
     rand::{SeedableRng, rngs::StdRng},
     vec::Vec,
 };
+use base64::prelude::*;
 use bbs_plus::{
     error::BBSPlusError,
     prelude::SignatureG1,
@@ -57,8 +59,10 @@ use equality_across_groups::{
     tom256::{Affine as Tom256Affine, Config as Tom256Config},
 };
 pub use kvac::bbs_sharp::ecdsa;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::BTreeMap, fmt};
 
 /// The [Issuer] represents here the government issuer in Swiyu, which can create new
 /// credentials for the Holder ([MobilePhone]s).
@@ -66,6 +70,7 @@ use std::collections::{BTreeMap, HashMap};
 /// An [Issuer] has a private key to sign credentials for the holders.
 /// The certificate of the issuer, the public key, can be used by the [Verifier] to
 /// check that a certificate has been created by the [Issuer]
+#[derive(Debug)]
 pub struct Issuer {
     /// Common setup.
     setup: PublicSetup,
@@ -75,6 +80,7 @@ pub struct Issuer {
 
 /// A [Verifier] in this demo only has to create random messages, and then verify that the
 /// [ECDSAProof] is correct.
+#[derive(Debug)]
 pub struct Verifier {
     /// Common setup.
     setup: PublicSetup,
@@ -88,6 +94,7 @@ pub struct Verifier {
 /// - [MobilePhone::swiyu()] as a simple representation of the Swiyu application
 ///
 /// To use the Swiyu app, it first needs to be [MobilePhone::install_swiyu()].
+#[derive(Debug)]
 pub struct MobilePhone {
     /// Common setup.
     setup: PublicSetup,
@@ -103,7 +110,7 @@ pub struct MobilePhone {
 /// [MobilePhone] in a secure way.
 /// We suppose that the first two positions are the x and y value of the holder's
 /// public key.
-/// TODO: also add one or two fields which can be revealed to the verifier.
+#[derive(CanonicalSerialize, Debug, Clone)]
 pub struct VerifiedCredential {
     /// The messages are the values hashed to a BlsFr scalar and are secret.
     /// Only the [Issuer] and the [MobilePhone] should know them.
@@ -120,7 +127,7 @@ pub struct VerifiedCredential {
 /// can only request a signature from one of the private keys, but not access it directly.
 /// While this makes it much more secure, it makes it also much more difficult to create
 /// useful cryptographic algorithms.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct SecureElement {
     /// Very secure key storage - only the private keys are kept.
     /// The ID for signing directly indexes the [Vec].
@@ -135,6 +142,7 @@ pub struct SecureElement {
 /// But for our example we want to see how the public key gets transferred from the
 /// [SecureElement] to the [Swiyu] app.
 /// In the same way you'll have to add the [VerifiedCredential] manually.
+#[derive(Debug)]
 pub struct Swiyu {
     /// Common Setup.
     setup: PublicSetup,
@@ -144,10 +152,10 @@ pub struct Swiyu {
     vcs: Option<VerifiedCredential>,
 }
 
-/// A [Presentation] is a shortened version of the [VerifiedCredential]. It contains
+/// A [BBSPresentation] is a blinded version of the [VerifiedCredential]. It contains
 /// a proof that the blinded version has been signed by the [Issuer], and can be
 /// verified by the certificate of the [Issuer].
-#[derive(Clone)]
+#[derive(Clone, CanonicalSerialize, Debug)]
 pub struct BBSPresentation {
     /// The blinded signature of the [VerifiedCredential], which can be verified
     /// using the certificate of the [Issuer].
@@ -156,7 +164,7 @@ pub struct BBSPresentation {
     /// [BBSPresentation::message_strings] are part of the credential.
     revealed: BTreeMap<usize, BlsFr>,
     /// Strings used to hash to the messages being _revealed_.
-    message_strings: HashMap<usize, String>,
+    message_strings: BTreeMap<usize, String>,
     /// Commitment to the x-coordinate of the public key
     commitment_pub_x: PublicCommitment,
     /// Commitment to the y-coordinate of the public key
@@ -165,7 +173,7 @@ pub struct BBSPresentation {
 
 /// Use an enum to show that the commitments can be open, including the random value,
 /// or closed, which is secure.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PublicCommitment {
     /// An Open commitment includes the random value, which is the [BlsFr] here.
     /// It should never be sent to an untrusted party, as they can unblind the
@@ -174,6 +182,32 @@ pub enum PublicCommitment {
     /// A Closed commitment is stripped of its random value and can safely be shared
     /// with untrusted parties.
     Closed(BlsG1Affine),
+}
+
+impl CanonicalSerialize for PublicCommitment {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        mode: Compress,
+    ) -> Result<(), SerializationError> {
+        match self {
+            PublicCommitment::Open(fp, affine) => {
+                fp.serialize_with_mode(&mut writer, mode)?;
+                affine.serialize_with_mode(&mut writer, mode)?;
+            }
+            PublicCommitment::Closed(affine) => affine.serialize_with_mode(&mut writer, mode)?,
+        }
+        Ok(())
+    }
+
+    fn serialized_size(&self, mode: Compress) -> usize {
+        match self {
+            PublicCommitment::Open(fp, affine) => {
+                fp.serialized_size(mode) + affine.serialized_size(mode)
+            }
+            PublicCommitment::Closed(affine) => affine.serialized_size(mode),
+        }
+    }
 }
 
 /// An [ECDSAProof] links the ECDSA signature from the [SecureElement] to the [Presentation::blinded]
@@ -220,7 +254,8 @@ impl Issuer {
     pub fn new_credential(&mut self, key_pub: SecP256Affine) -> VerifiedCredential {
         let pk_x = from_base_field_to_scalar_field::<Fq, BlsFr>(key_pub.x().unwrap());
         let pk_y = from_base_field_to_scalar_field::<Fq, BlsFr>(key_pub.y().unwrap());
-        let (first, last) = (format!("123"), format!("456"));
+        let mut generator = names::Generator::default();
+        let (first, last) = (generator.next().unwrap(), generator.next().unwrap());
         let message_strings = BTreeMap::from([
             (VerifiedCredential::FIELD_FIRSTNAME, first.clone()),
             (VerifiedCredential::FIELD_LASTNAME, last.clone()),
@@ -279,7 +314,7 @@ impl Verifier {
     /// verifies the signature?
     pub fn check_proof(
         &self,
-        verifier_message: &VerifierMessage,
+        verifier_message: VerifierMessage,
         bbs_presentation: BBSPresentation,
         ecdsa_proof: ECDSAProof,
     ) {
@@ -287,12 +322,12 @@ impl Verifier {
             .verify(
                 self.setup.clone(),
                 self.certificate.clone(),
-                &verifier_message.into(),
+                &(&verifier_message).into(),
             )
             .expect("Verification of BBS proof failed");
         ecdsa_proof.verify(
             self.setup.clone(),
-            verifier_message.into(),
+            (&verifier_message).into(),
             &bbs_presentation,
         );
     }
@@ -302,6 +337,7 @@ impl Verifier {
 /// [SecureElement] and in the [BBSPresentation].
 /// This is a very simple implementation allowing to create scalars
 /// for SecP256 and Bls12-381.
+#[derive(Debug, Clone)]
 pub struct VerifierMessage(String);
 
 impl VerifierMessage {
@@ -386,13 +422,14 @@ impl SecureElement {
     /// Signs a message with the private key referenced by id.
     /// No checks are done to make sure this id exists or is tied to the current
     /// application.
-    pub fn sign(&self, id: usize, msg: &VerifierMessage) -> ecdsa::Signature {
-        ecdsa::Signature::new_prehashed(&mut StdRng::seed_from_u64(0u64), msg.into(), self.keys[id])
+    pub fn sign(&self, id: usize, msg: VerifierMessage) -> ecdsa::Signature {
+        ecdsa::Signature::new_prehashed(&mut StdRng::seed_from_u64(0u64), (&msg).into(), self.keys[id])
     }
 }
 
 /// A [SecureElement] keypair, with the private key stored in the
 /// [SecureElement] only, and only accessible via its id.
+#[derive(Debug)]
 pub struct SEKeypair {
     pub id: usize,
     pub key_pub: SecP256Affine,
@@ -430,8 +467,8 @@ impl Swiyu {
     /// [BBSPresentation::close()] to remove the random values.
     pub fn blinded_presentation(
         &mut self,
-        message: &VerifierMessage,
-        reveal: &[usize],
+        message: VerifierMessage,
+        reveal: Vec<usize>,
     ) -> BBSPresentation {
         let vc = self.vcs.as_ref().expect("No credential yet!");
         let mut messages_and_blindings = vec![
@@ -455,7 +492,7 @@ impl Swiyu {
         ];
 
         // Add the first- or last-name, depending on the request.
-        let mut message_strings = HashMap::new();
+        let mut message_strings = BTreeMap::new();
         let mut revealed = BTreeMap::new();
         for idx in [
             VerifiedCredential::FIELD_FIRSTNAME,
@@ -478,7 +515,7 @@ impl Swiyu {
             messages_and_blindings,
         )
         .unwrap()
-        .gen_proof(&message.into())
+        .gen_proof(&(&message).into())
         .unwrap();
 
         BBSPresentation {
@@ -544,7 +581,7 @@ impl PublicCommitment {
 
 /// Globally known public values.
 /// These values can be created by anyone and are needed by all actors.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PublicSetup {
     /// Random Number Generator
     rng: StdRng,
@@ -599,6 +636,10 @@ impl PublicSetup {
         }
     }
 
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("JSON conversion error")
+    }
+
     /// For the proofs it is important to enter all variables in the transcript, and then hash
     /// them to create a challenge.
     /// If the prover can modify values which are not part of the transcript, they might get
@@ -635,7 +676,7 @@ impl ECDSAProof {
         holder_pub: SecP256Affine,
         bbs_presentation: BBSPresentation,
         ecdsa_signature: ecdsa::Signature,
-        verifier_message: &VerifierMessage,
+        verifier_message: VerifierMessage,
     ) -> Self {
         // Commit to ECDSA public key on Tom-256 curve
         let comm_pk =
@@ -643,10 +684,10 @@ impl ECDSAProof {
                 .unwrap();
 
         let transformed_sig =
-            TransformedEcdsaSig::new(&ecdsa_signature, verifier_message.into(), holder_pub)
+            TransformedEcdsaSig::new(&ecdsa_signature, (&verifier_message).into(), holder_pub)
                 .unwrap();
         transformed_sig
-            .verify_prehashed(verifier_message.into(), holder_pub)
+            .verify_prehashed((&verifier_message).into(), holder_pub)
             .unwrap();
 
         // Create the transcript which will be used for the challenge.
@@ -658,7 +699,7 @@ impl ECDSAProof {
             &mut prover_transcript,
             &comm_pk.comm,
             &bbs_presentation,
-            &verifier_message.into(),
+            &(&verifier_message).into(),
         );
 
         // Create a protocol to prove that the `transformed_sig` on the `verifier_message`
@@ -667,7 +708,7 @@ impl ECDSAProof {
             PoKEcdsaSigCommittedPublicKeyProtocol::<{ ECDSAProof::NUM_REPS_SCALAR_MULT }>::init(
                 &mut setup.rng,
                 transformed_sig,
-                verifier_message.into(),
+                (&verifier_message).into(),
                 holder_pub,
                 comm_pk.clone(),
                 &setup.comm_key_secp,
@@ -774,6 +815,11 @@ impl ECDSAProof {
             .expect("DlEQ proff for y position failed");
     }
 
+    /// Returns the json string of the structure.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("While serializing to JSON")
+    }
+
     // Put the relevant entries in the transcript.
     fn append_transcript<T: Transcript + Clone + Write>(
         pt: &mut T,
@@ -848,14 +894,208 @@ impl BBSPresentation {
     pub fn message_string(&self, idx: usize) -> Option<String> {
         self.message_strings.get(&idx).cloned()
     }
+
+    /// Returns the JSON string.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("Error while serializing to json")
+    }
 }
+
+/// Thanks go to ChatGPT for this code...
+impl Serialize for BBSPresentation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Helper to serialize ark-serialize types as base64
+        fn serialize_ark<T: CanonicalSerialize>(t: &T) -> String {
+            let mut buf = Vec::new();
+            t.serialize_compressed(&mut buf).unwrap();
+            BASE64_STANDARD.encode(buf)
+        }
+
+        // Serialize revealed map: idx -> base64(BlsFr)
+        let revealed: BTreeMap<usize, String> = self
+            .revealed
+            .iter()
+            .map(|(k, v)| (*k, serialize_ark(v)))
+            .collect();
+
+        // Serialize message_strings as is
+        let message_strings = &self.message_strings;
+
+        // Serialize commitments
+        fn serialize_commitment(c: &PublicCommitment) -> serde_json::Value {
+            match c {
+                PublicCommitment::Open(rand, affine) => {
+                    serde_json::json!({
+                        "type": "open",
+                        "rand": serialize_ark(rand),
+                        "affine": serialize_ark(affine),
+                    })
+                }
+                PublicCommitment::Closed(affine) => {
+                    serde_json::json!({
+                        "type": "closed",
+                        "affine": serialize_ark(affine),
+                    })
+                }
+            }
+        }
+
+        // Serialize PoK proof
+        let proof_bytes = {
+            let mut buf = Vec::new();
+            self.proof.serialize_compressed(&mut buf).unwrap();
+            BASE64_STANDARD.encode(buf)
+        };
+
+        let mut state = serializer.serialize_struct("BBSPresentation", 5)?;
+        state.serialize_field("proof", &proof_bytes)?;
+        state.serialize_field("revealed", &revealed)?;
+        state.serialize_field("message_strings", message_strings)?;
+        state.serialize_field(
+            "commitment_pub_x",
+            &serialize_commitment(&self.commitment_pub_x),
+        )?;
+        state.serialize_field(
+            "commitment_pub_y",
+            &serialize_commitment(&self.commitment_pub_y),
+        )?;
+        state.end()
+    }
+}
+
+/// Thanks to ChatGPT for this serialization stub.
+impl Serialize for PublicSetup {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("PublicSetup", 5)?;
+        state.serialize_field("sig_params_g1", &self.sig_params_g1)?;
+        // Serialize bpp_setup_params as base64-encoded compressed bytes
+        let mut bpp_bytes = Vec::new();
+        self.bpp_setup_params
+            .serialize_compressed(&mut bpp_bytes)
+            .unwrap();
+        let bpp_base64 = BASE64_STANDARD.encode(bpp_bytes);
+        state.serialize_field("bpp_setup_params", &bpp_base64)?;
+        state.serialize_field("comm_key_tom", &self.comm_key_tom)?;
+        state.serialize_field("comm_key_secp", &self.comm_key_secp)?;
+        state.serialize_field("comm_key_bls", &self.comm_key_bls)?;
+        state.end()
+    }
+}
+
+/// Thanks to ChatGPT for this serialization stub.
+impl Serialize for ECDSAProof {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Helper to serialize ark-serialize types as base64
+        fn serialize_ark<T: CanonicalSerialize>(t: &T) -> String {
+            let mut buf = Vec::new();
+            t.serialize_compressed(&mut buf).unwrap();
+            BASE64_STANDARD.encode(buf)
+        }
+
+        let comm_pk_bytes = serialize_ark(&self.comm_pk);
+        let proof_bytes = serialize_ark(&self.proof);
+        let proof_eq_pk_x_bytes = serialize_ark(&self.proof_eq_pk_x);
+        let proof_eq_pk_y_bytes = serialize_ark(&self.proof_eq_pk_y);
+
+        let mut state = serializer.serialize_struct("ECDSAProof", 4)?;
+        state.serialize_field("comm_pk", &comm_pk_bytes)?;
+        state.serialize_field("proof", &proof_bytes)?;
+        state.serialize_field("proof_eq_pk_x", &proof_eq_pk_x_bytes)?;
+        state.serialize_field("proof_eq_pk_y", &proof_eq_pk_y_bytes)?;
+        state.end()
+    }
+}
+
+impl fmt::Display for BBSPresentation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(json) => write!(f, "BBSPresentation: {json}"),
+            Err(_) => Err(fmt::Error),
+        }
+    }
+}
+
+impl fmt::Display for ECDSAProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(json) => write!(f, "ECDSAProof: {json}"),
+            Err(_) => Err(fmt::Error),
+        }
+    }
+}
+
+impl fmt::Display for Issuer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Issuer: {:?}", self)
+    }
+}
+
+impl fmt::Display for MobilePhone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MobilePhone: {:?}", self)
+    }
+}
+
+impl fmt::Display for PublicSetup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(json) => write!(f, "PublicSetup: {json}"),
+            Err(_) => Err(fmt::Error),
+        }
+    }
+}
+
+impl fmt::Display for SecureElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SecureElement: {:?}", self)
+    }
+}
+
+impl fmt::Display for SEKeypair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SEKeypair: {:?}", self)
+    }
+}
+
+impl fmt::Display for Swiyu {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Swiyu app: {:?}", self)
+    }
+}
+
+impl fmt::Display for VerifiedCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "VerifiedCredential: {:?}", self)
+    }
+}
+
+impl fmt::Display for Verifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Verifier: {:?}", self)
+    }
+}
+
+impl fmt::Display for VerifierMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "VerifierMessage: {:?}", self)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::BTreeMap, error::Error};
 
-    use ark_ff::BigInt;
-
     use super::*;
+    use ark_ff::BigInt;
 
     // A complete tewst of the ECDSA signature verification.
     #[test]
@@ -873,20 +1113,20 @@ mod test {
         holder.swiyu().add_vc(se_kp.id, credential);
 
         // Verifier requests a presentation from the holder
-        let message = &verifier.create_message();
+        let message = verifier.create_message();
 
         // Holder creates a blinded presentation, an ECDSA signature, and a proof.
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
         let presentation = holder
             .swiyu()
-            .blinded_presentation(&message, &[VerifiedCredential::FIELD_FIRSTNAME]);
-        let signature = holder.secure_element().sign(0, &message);
+            .blinded_presentation(message.clone(), vec![VerifiedCredential::FIELD_FIRSTNAME]);
+        let signature = holder.secure_element().sign(0, message.clone());
         let proof = ECDSAProof::new(
             setup,
             se_kp.key_pub,
             presentation.clone(),
             signature,
-            &message,
+            message.clone(),
         );
         let presentation_closed = presentation.close();
 

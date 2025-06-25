@@ -26,6 +26,10 @@ rand_core = { version = "0.6", default-features = false }
 blake2 = { version = "0.10", default-features = false }
 chrono = "0.4.41"
 sha2 = "0.10.9"
+names = { version = "0.14.0", default-features = false }
+serde = { version = "1"}
+serde_json = { version = "1"}
+base64 = "0.22.1"
 
 [features]
 default = ["parallel"]

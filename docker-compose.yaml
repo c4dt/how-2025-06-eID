@@ -2,7 +2,7 @@ services:
   jupyter:
     image: ghcr.io/c4dt/how-2025-06-eid:latest
     volumes:
-    - .:/code/how
+      - .:/code/how
     ports:
-    - 8888:8888
-    platform: linux/amd64
+      - 8888:8888
+    # platform: linux/amd64
