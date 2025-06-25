@@ -2,7 +2,9 @@ services:
   jupyter:
     image: ghcr.io/how-2025-06-eid:latest
     build: .
+    # command: devbox run jupyter-docker
     volumes:
-    - .:/code
+    - .:/code/how
+    # - ./devbox.json:/code/devbox.json
     ports:
     - 8888:8888

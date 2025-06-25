@@ -12,7 +12,10 @@
     ],
     "scripts": {
       "jupyter": [
-        "jupyter-lab -y"
+        "jupyter-lab -y --ip=0"
+      ],
+      "jupyter-docker": [
+        "cd how; jupyter-lab -y --ip=0"
       ],
       "clean": [
         "jupyter nbconvert --clear-output --inplace *.ipynb"
