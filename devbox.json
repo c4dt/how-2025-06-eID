@@ -12,7 +12,7 @@
     ],
     "scripts": {
       "jupyter": [
-        "jupyter-lab -y --ip=0"
+        "jupyter-lab -y"
       ],
       "jupyter-docker": [
         "cd how; jupyter-lab -y --ip=0"
