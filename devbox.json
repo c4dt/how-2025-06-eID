@@ -8,7 +8,7 @@
     "init_hook": [
       "echo Ensuring npm and python packages are installed",
       "if [ -z \"$( find $RUSTUP_HOME | grep toolchains/stable )\" ]; then rustup default stable; fi",
-      "test -x $HOME/.cargo/bin/evcxr_jupyter || (cargo install --lock evcxr_jupyter && evcxr_jupyter --install)"
+      "test -x $HOME/.cargo/bin/evcxr_jupyter || (cargo install --locked evcxr_jupyter && evcxr_jupyter --install)"
     ],
     "scripts": {
       "jupyter": [

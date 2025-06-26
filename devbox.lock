@@ -1,54 +1,6 @@
 {
   "lockfile_version": "1",
   "packages": {
-    "cargo-binstall@latest": {
-      "last_modified": "2025-06-20T02:24:11Z",
-      "resolved": "github:NixOS/nixpkgs/076e8c6678d8c54204abcb4b1b14c366835a58bb#cargo-binstall",
-      "source": "devbox-search",
-      "version": "1.12.7",
-      "systems": {
-        "aarch64-darwin": {
-          "outputs": [
-            {
-              "name": "out",
-              "path": "/nix/store/zzp3lfrn2jr4xlw821yq3vv6zdidhz0v-cargo-binstall-1.12.7",
-              "default": true
-            }
-          ],
-          "store_path": "/nix/store/zzp3lfrn2jr4xlw821yq3vv6zdidhz0v-cargo-binstall-1.12.7"
-        },
-        "aarch64-linux": {
-          "outputs": [
-            {
-              "name": "out",
-              "path": "/nix/store/hs0g0k4iw58n00rp03adji55xj4fxfca-cargo-binstall-1.12.7",
-              "default": true
-            }
-          ],
-          "store_path": "/nix/store/hs0g0k4iw58n00rp03adji55xj4fxfca-cargo-binstall-1.12.7"
-        },
-        "x86_64-darwin": {
-          "outputs": [
-            {
-              "name": "out",
-              "path": "/nix/store/c2zjgymd91yw0n7d7x2mrz509gy2gss2-cargo-binstall-1.12.7",
-              "default": true
-            }
-          ],
-          "store_path": "/nix/store/c2zjgymd91yw0n7d7x2mrz509gy2gss2-cargo-binstall-1.12.7"
-        },
-        "x86_64-linux": {
-          "outputs": [
-            {
-              "name": "out",
-              "path": "/nix/store/xkgnh4hnrhsr51jvzwxr20xnlzq4v6xn-cargo-binstall-1.12.7",
-              "default": true
-            }
-          ],
-          "store_path": "/nix/store/xkgnh4hnrhsr51jvzwxr20xnlzq4v6xn-cargo-binstall-1.12.7"
-        }
-      }
-    },
     "github:NixOS/nixpkgs/nixpkgs-unstable": {
       "last_modified": "2025-06-20T02:24:11Z",
       "resolved": "github:NixOS/nixpkgs/076e8c6678d8c54204abcb4b1b14c366835a58bb?lastModified=1750386251&narHash=sha256-1ovgdmuDYVo5OUC5NzdF%2BV4zx2uT8RtsgZahxidBTyw%3D"
