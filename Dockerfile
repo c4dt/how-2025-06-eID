@@ -21,5 +21,6 @@ COPY --from=build /nix /nix
 COPY --from=build /code /code
 COPY --from=build /home /home
 USER ${DEVBOX_USER}:${DEVBOX_USER}
+EXPOSE 8888
 
 CMD ["devbox", "run", "jupyter-docker"]
