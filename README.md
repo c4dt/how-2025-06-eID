@@ -34,7 +34,7 @@ and **unlinkability**
 
 You can find the presentation here:
 
-[E-ID Hands-on Workshop Presentation](https://drive.google.com/file/d/1yusj6qYUdv0IbvwsZNE-DOY84PmnTm8I/view?usp=sharing)
+[E-ID Hands-on Workshop Presentation](https://drive.google.com/file/d/1AnvaZwXLrZ_hEN9CEj3GnchfhN4uBJKi/view?usp=sharing)
 
 ## Swiyu Test Environment
 
