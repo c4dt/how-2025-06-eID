@@ -15,6 +15,15 @@ The hands-on workshop is in two parts:
 - Morning: presentation by Dr. Imad Aad, including discussion time
 - Afternoon: hands-on workshop using Jupyter notebooks
 
+# Morning - Overview of eID + Privacy Landscape
+
+The morning is presented by Dr. Imad Aad, and will discuss how different e-ID technologies work,
+what the legal frameworks are, and compare them.
+
+You can find the presentation here:
+
+[Overview of eID + Privacy Landscape](https://drive.google.com/file/d/1aosDYJNpBLp_KcoBlE2D08rCWbMg42Co/view?usp=sharing)
+
 # Afternoon - Practical Part
 
 In the afternoon, we present the following:
@@ -25,7 +34,7 @@ and **unlinkability**
 
 You can find the presentation here:
 
-[Hands-on Workshop Presentation](https://drive.google.com/file/d/1yusj6qYUdv0IbvwsZNE-DOY84PmnTm8I/view?usp=sharing)
+[E-ID Hands-on Workshop Presentation](https://drive.google.com/file/d/1yusj6qYUdv0IbvwsZNE-DOY84PmnTm8I/view?usp=sharing)
 
 ## Swiyu Test Environment
 
