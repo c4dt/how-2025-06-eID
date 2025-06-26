@@ -2,14 +2,13 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.12.0/.schema/devbox.schema.json",
   "packages": [
     "jupyter@latest",
-    "rustup@latest",
-    "cargo-binstall@latest"
+    "rustup@latest"
   ],
   "shell": {
     "init_hook": [
       "echo Ensuring npm and python packages are installed",
       "if [ -z \"$( find $RUSTUP_HOME | grep toolchains/stable )\" ]; then rustup default stable; fi",
-      "test -x $HOME/.cargo/bin/evcxr_jupyter || (cargo binstall --force -y evcxr_jupyter && evcxr_jupyter --install)"
+      "test -x $HOME/.cargo/bin/evcxr_jupyter || (cargo install --lock evcxr_jupyter && evcxr_jupyter --install)"
     ],
     "scripts": {
       "jupyter": [
