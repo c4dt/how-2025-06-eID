@@ -1117,7 +1117,10 @@ mod test {
     };
 
     use super::*;
-    use proof_system::{prelude::bbs_plus::PoKBBSSignatureG1Prover, witness::PoKBBSSignatureG1};
+    use proof_system::{
+        prelude::bbs_plus::{PoKBBSSignatureG1Prover, PoKBBSSignatureG1Verifier},
+        witness::PoKBBSSignatureG1,
+    };
 
     // A complete tewst of the ECDSA signature verification.
     #[test]
@@ -1165,28 +1168,30 @@ mod test {
         Ok(())
     }
 
+    use proof_system::{
+        prelude::{EqualWitnesses, MetaStatement, MetaStatements, Witness, WitnessRef, Witnesses},
+        proof::Proof,
+        proof_spec::ProofSpec,
+        statement::{Statements, ped_comm::PedersenCommitment as PedersenCommitmentStmt},
+    };
+
     /// Proving a pedersen commitment to a scalar in BBS.
     #[test]
     fn verify_bbs() -> Result<(), Box<dyn Error>> {
-        let sig_params_g1 = SignatureParamsG1::<Bls12_381>::new::<Blake2b512>(
-            "eid-demo".as_bytes(),
-            VerifiedCredential::FIELD_COUNT,
-        );
+        let sig_params_g1 =
+            SignatureParamsG1::<Bls12_381>::new::<Blake2b512>("eid-demo".as_bytes(), 2);
         let mut rng = StdRng::seed_from_u64(0u64);
-        let comm_key_bls = PedersenCommitmentKey::<BlsG1Affine>::new::<Blake2b512>(b"test3");
-        let kp_issuer = KeypairG2::<Bls12_381>::generate_using_rng(&mut rng, &sig_params_g1);
+        let issuer_keypair = KeypairG2::<Bls12_381>::generate_using_rng(&mut rng, &sig_params_g1);
         let holder_sk = SecP256Fr::rand(&mut StdRng::seed_from_u64(0u64));
         let holder_pub = (ecdsa::Signature::generator() * holder_sk).into_affine();
         let message_pk_x = from_base_field_to_scalar_field::<Fq, BlsFr>(holder_pub.x().unwrap());
         let message_pk_y = from_base_field_to_scalar_field::<Fq, BlsFr>(holder_pub.y().unwrap());
-        let message_pet = (&VerifierMessage(format!("goldfish"))).into();
-        let message_os = (&VerifierMessage(format!("FreeBSD"))).into();
-        let messages = vec![message_pk_x, message_pk_y, message_pet, message_os];
+        let messages = vec![message_pk_x, message_pk_y];
 
-        let signature = SignatureG1::<Bls12_381>::new(
+        let signature_issuer = SignatureG1::<Bls12_381>::new(
             &mut rng,
             &messages,
-            &kp_issuer.secret_key,
+            &issuer_keypair.secret_key,
             &sig_params_g1,
         )
         .unwrap();
@@ -1194,32 +1199,23 @@ mod test {
         let challenge = BlsFr::rand(&mut rng);
         let proof_bbs = PoKOfSignatureG1Protocol::init(
             &mut rng,
-            &signature,
+            &signature_issuer,
             &sig_params_g1,
             vec![
                 MessageOrBlinding::BlindMessageRandomly(&message_pk_x),
                 MessageOrBlinding::BlindMessageRandomly(&message_pk_y),
-                MessageOrBlinding::RevealMessage(&message_pet),
-                MessageOrBlinding::RevealMessage(&message_os),
             ],
         )
         .unwrap()
         .gen_proof(&challenge)
         .unwrap();
 
-        use proof_system::{
-            prelude::{
-                EqualWitnesses, MetaStatement, MetaStatements, Witness, WitnessRef, Witnesses,
-            },
-            proof::Proof,
-            proof_spec::ProofSpec,
-            statement::{Statements, ped_comm::PedersenCommitment as PedersenCommitmentStmt},
-        };
-
+        let comm_key_bls = PedersenCommitmentKey::<BlsG1Affine>::new::<Blake2b512>(b"test3");
         let randomness_pub_x = BlsFr::rand(&mut rng);
         let commitment_pub_x = comm_key_bls.commit(&message_pk_x, &randomness_pub_x);
         let randomness_pub_y = BlsFr::rand(&mut rng);
         let commitment_pub_y = comm_key_bls.commit(&message_pk_y, &randomness_pub_y);
+
         let mut statements = Statements::<Bls12_381>::new();
         statements.add(PedersenCommitmentStmt::new_statement_from_params(
             vec![comm_key_bls.g, comm_key_bls.h],
@@ -1232,18 +1228,18 @@ mod test {
         statements.add(
             PoKBBSSignatureG1Prover::<Bls12_381>::new_statement_from_params(
                 sig_params_g1.clone(),
-                BTreeMap::from([(2, message_pet), (3, message_os)]),
+                BTreeMap::new(),
             ),
         );
 
         let mut meta_statements = MetaStatements::new();
         meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
-            vec![(0, 0), (2, 0)] // 0th statement's 3rd witness is equal to 1st statement's 1st witness
+            vec![(0, 0), (2, 0)]
                 .into_iter()
                 .collect::<BTreeSet<WitnessRef>>(),
         )));
         meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
-            vec![(1, 0), (2, 1)] // 0th statement's 3rd witness is equal to 1st statement's 1st witness
+            vec![(1, 0), (2, 1)]
                 .into_iter()
                 .collect::<BTreeSet<WitnessRef>>(),
         )));
@@ -1258,7 +1254,7 @@ mod test {
             randomness_pub_y,
         ]));
         witnesses.add(PoKBBSSignatureG1::new_as_witness(
-            signature,
+            signature_issuer,
             BTreeMap::from([(0, message_pk_x), (1, message_pk_y)]),
         ));
 
@@ -1272,12 +1268,12 @@ mod test {
         );
         proof_spec.validate().unwrap();
 
-        let nonce = Some(b"test nonce".to_vec());
+        let nonce_eq_pk = Some(b"test nonce".to_vec());
         let proof_eq_pk = Proof::new::<StdRng, Blake2b512>(
             &mut rng,
             proof_spec.clone(),
             witnesses.clone(),
-            nonce.clone(),
+            nonce_eq_pk.clone(),
             Default::default(),
         )
         .unwrap()
@@ -1285,15 +1281,42 @@ mod test {
 
         proof_bbs
             .verify(
-                &BTreeMap::from([(2, message_pet), (3, message_os)]),
+                &BTreeMap::new(),
                 &challenge,
-                kp_issuer.public_key.clone(),
-                sig_params_g1,
+                issuer_keypair.public_key.clone(),
+                sig_params_g1.clone(),
             )
             .expect("Verify BBS proof");
 
+        let mut verifier_statements = Statements::<Bls12_381>::new();
+        verifier_statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![comm_key_bls.g, comm_key_bls.h],
+            commitment_pub_x,
+        ));
+        verifier_statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![comm_key_bls.g, comm_key_bls.h],
+            commitment_pub_y,
+        ));
+        verifier_statements.add(PoKBBSSignatureG1Verifier::new_statement_from_params(
+            sig_params_g1.clone(),
+            issuer_keypair.public_key.clone(),
+            BTreeMap::new(),
+        ));
+        let verifier_proof_spec = ProofSpec::new(
+            verifier_statements.clone(),
+            meta_statements.clone(),
+            vec![],
+            context.clone(),
+        );
+        verifier_proof_spec.validate().unwrap();
+
         proof_eq_pk
-            .verify::<StdRng, Blake2b512>(&mut rng, proof_spec, nonce.clone(), Default::default())
+            .verify::<StdRng, Blake2b512>(
+                &mut rng,
+                verifier_proof_spec,
+                nonce_eq_pk.clone(),
+                Default::default(),
+            )
             .expect("Verify Point Equality Proof");
 
         Ok(())
