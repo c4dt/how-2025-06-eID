@@ -10,6 +10,7 @@ kvac = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa8
 bulletproofs_plus_plus = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
 test_utils = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
 bbs_plus = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
+proof_system = { git = "https://github.com/docknetwork/crypto", rev = "9d1b031ecda6b0aa844a79186037f19b73d87495" }
 
 ark-ec = { version = "^0.4.1", default-features = false }
 ark-ff = { version = "^0.4.1", default-features = false }
