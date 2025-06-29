@@ -62,7 +62,10 @@ pub use kvac::bbs_sharp::ecdsa;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+};
 
 /// The [Issuer] represents here the government issuer in Swiyu, which can create new
 /// credentials for the Holder ([MobilePhone]s).
@@ -423,7 +426,11 @@ impl SecureElement {
     /// No checks are done to make sure this id exists or is tied to the current
     /// application.
     pub fn sign(&self, id: usize, msg: VerifierMessage) -> ecdsa::Signature {
-        ecdsa::Signature::new_prehashed(&mut StdRng::seed_from_u64(0u64), (&msg).into(), self.keys[id])
+        ecdsa::Signature::new_prehashed(
+            &mut StdRng::seed_from_u64(0u64),
+            (&msg).into(),
+            self.keys[id],
+        )
     }
 }
 
@@ -815,6 +822,16 @@ impl ECDSAProof {
             .expect("DlEQ proff for y position failed");
     }
 
+    /// Returns the sizes of the different proofs.
+    pub fn get_sizes(&self) -> HashMap<&str, usize> {
+        HashMap::from([
+            ("proof_add", self.proof.proof_add.compressed_size()),
+            ("proof_scalar", self.proof.proof_minus_zR.compressed_size()),
+            ("proof_eqdl_x", self.proof_eq_pk_x.compressed_size()),
+            ("proof_eqdl_y", self.proof_eq_pk_y.compressed_size()),
+        ])
+    }
+
     /// Returns the json string of the structure.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("While serializing to JSON")
@@ -893,6 +910,11 @@ impl BBSPresentation {
     /// If `Verify` has not been called, this is not reliable!
     pub fn message_string(&self, idx: usize) -> Option<String> {
         self.message_strings.get(&idx).cloned()
+    }
+
+    /// Returns the size of the BBS proof.
+    pub fn get_sizes(&self) -> HashMap<&str, usize> {
+        HashMap::from([("proof_bbs", self.proof.compressed_size())])
     }
 
     /// Returns the JSON string.
@@ -1110,7 +1132,7 @@ mod test {
         holder.install_swiyu();
         let se_kp = holder.secure_element().create_kp();
         let credential = issuer.new_credential(se_kp.key_pub);
-        holder.swiyu().add_vc(se_kp.id, credential);
+        holder.swiyu().add_vc(se_kp.id, credential.clone());
 
         // Verifier requests a presentation from the holder
         let message = verifier.create_message();
@@ -1134,7 +1156,7 @@ mod test {
         verifier.check_proof(message, presentation_closed.clone(), proof.clone());
         assert_eq!(
             presentation_closed.message_string(VerifiedCredential::FIELD_FIRSTNAME),
-            Some(format!("123"))
+            Some(credential.message_strings[&VerifiedCredential::FIELD_FIRSTNAME].clone())
         );
         assert_eq!(
             presentation_closed.message_string(VerifiedCredential::FIELD_LASTNAME),
