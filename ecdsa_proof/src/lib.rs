@@ -1178,15 +1178,18 @@ mod test {
     /// Proving a pedersen commitment to a scalar in BBS.
     #[test]
     fn verify_bbs() -> Result<(), Box<dyn Error>> {
-        let sig_params_g1 =
-            SignatureParamsG1::<Bls12_381>::new::<Blake2b512>("eid-demo".as_bytes(), 2);
         let mut rng = StdRng::seed_from_u64(0u64);
-        let issuer_keypair = KeypairG2::<Bls12_381>::generate_using_rng(&mut rng, &sig_params_g1);
         let holder_sk = SecP256Fr::rand(&mut StdRng::seed_from_u64(0u64));
         let holder_pub = (ecdsa::Signature::generator() * holder_sk).into_affine();
+        let message_pet = (&VerifierMessage(format!("goldfish"))).into();
         let message_pk_x = from_base_field_to_scalar_field::<Fq, BlsFr>(holder_pub.x().unwrap());
         let message_pk_y = from_base_field_to_scalar_field::<Fq, BlsFr>(holder_pub.y().unwrap());
-        let messages = vec![message_pk_x, message_pk_y];
+        let messages = vec![message_pk_x, message_pk_y, message_pet];
+        let sig_params_g1 = SignatureParamsG1::<Bls12_381>::new::<Blake2b512>(
+            "eid-demo".as_bytes(),
+            messages.len() as u32,
+        );
+        let issuer_keypair = KeypairG2::<Bls12_381>::generate_using_rng(&mut rng, &sig_params_g1);
 
         let signature_issuer = SignatureG1::<Bls12_381>::new(
             &mut rng,
@@ -1204,6 +1207,7 @@ mod test {
             vec![
                 MessageOrBlinding::BlindMessageRandomly(&message_pk_x),
                 MessageOrBlinding::BlindMessageRandomly(&message_pk_y),
+                MessageOrBlinding::RevealMessage(&message_pet),
             ],
         )
         .unwrap()
@@ -1228,7 +1232,7 @@ mod test {
         statements.add(
             PoKBBSSignatureG1Prover::<Bls12_381>::new_statement_from_params(
                 sig_params_g1.clone(),
-                BTreeMap::new(),
+                BTreeMap::from([(2, message_pet)]),
             ),
         );
 
@@ -1281,7 +1285,7 @@ mod test {
 
         proof_bbs
             .verify(
-                &BTreeMap::new(),
+                &BTreeMap::from([(2, message_pet)]),
                 &challenge,
                 issuer_keypair.public_key.clone(),
                 sig_params_g1.clone(),
@@ -1300,7 +1304,7 @@ mod test {
         verifier_statements.add(PoKBBSSignatureG1Verifier::new_statement_from_params(
             sig_params_g1.clone(),
             issuer_keypair.public_key.clone(),
-            BTreeMap::new(),
+            BTreeMap::from([(2, message_pet)]),
         ));
         let verifier_proof_spec = ProofSpec::new(
             verifier_statements.clone(),
