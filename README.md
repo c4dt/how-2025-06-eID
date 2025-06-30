@@ -105,6 +105,9 @@ In addition to these two files, there is some rust code available here:
 
 [ecdsa_proof](./ecdsa_proof/src/lib.rs)
 
+With the documentation here: [ecdsa_proof documentation](./docs/ecdsa_proof/index.html) or on
+[c4dt.github.io](https://c4dt.github.io/how-2025-06-eID).
+
 It wraps the [docknetwork/crypto](https://github.com/docknetwork/crypto/tree/main/equality_across_groups)
 proof of concept. 
 The main difference is that it uses structures which represent the actors and is geared towards showing
