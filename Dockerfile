@@ -1,26 +1,15 @@
-FROM jetpackio/devbox:latest AS build
+FROM rust:1.88-bullseye
 
+RUN apt update && apt install -y jupyter-notebook curl cargo
+RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+RUN cargo binstall evcxr_jupyter
+
+RUN useradd -d /code ecdsa
+RUN mkdir -p /code && chown ecdsa.ecdsa /code
+USER ecdsa
 WORKDIR /code
-USER root:root
-RUN mkdir -p /code && chown ${DEVBOX_USER}:${DEVBOX_USER} /code
-USER ${DEVBOX_USER}:${DEVBOX_USER}
-COPY --chown=${DEVBOX_USER}:${DEVBOX_USER} devbox.json devbox.json
-COPY --chown=${DEVBOX_USER}:${DEVBOX_USER} devbox.lock devbox.lock
-COPY --chown=${DEVBOX_USER}:${DEVBOX_USER} ecdsa_proof/Cargo.toml .
-COPY --chown=${DEVBOX_USER}:${DEVBOX_USER} cargo-docker.toml /code/.cargo/config.toml
+RUN evcxr_jupyter --install
+ENV CARGO_HOME=/code
+# COPY cargo-docker.toml /code/.cargo/config.toml
 
-RUN devbox add nodejs gcc
-RUN devbox run -- "echo Installing devbox packages"
-# RUN devbox run -- "mkdir src; touch src/lib.rs; cargo check"
-RUN nix-store --gc && nix-store --optimise
-
-FROM jetpackio/devbox:latest
-
-WORKDIR /code
-COPY --from=build /nix /nix
-COPY --from=build /code /code
-COPY --from=build /home /home
-USER ${DEVBOX_USER}:${DEVBOX_USER}
-EXPOSE 8888
-
-CMD ["devbox", "run", "jupyter-docker"]
+ENTRYPOINT ["jupyter-notebook", "-y", "--ip", "0"]

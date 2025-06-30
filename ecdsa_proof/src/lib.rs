@@ -14,7 +14,8 @@
 //! - errors in this re-arrangement of @Lovesh's excellent work from
 //! [docknetwork/crypt](https://github.com/docknetwork/crypto/blob/main/equality_across_groups/src/pok_ecdsa_pubkey.rs#L462)
 //! - not optimal and not secure ways of treating private keys and other random secrets
-//! - at least one glaring error in the verification of the ECDSA signature
+//! - commitment - BBS proof: nonce and context are static - it could directly integrate the
+//! revealed values in the proof.
 //!
 //! So while this work has been done to the best of my knowledge, I definietly took a lot
 //! of shortcuts and definitely valued simplicity for a hands-on-workshop over cryptographic
@@ -29,7 +30,7 @@ use ark_ff::PrimeField;
 use ark_secp256r1::{Affine as SecP256Affine, Fq, Fr as SecP256Fr};
 use ark_serialize::{CanonicalSerialize, Compress, SerializationError};
 use ark_std::{
-    UniformRand, Zero,
+    UniformRand,
     io::Write,
     rand::{SeedableRng, rngs::StdRng},
     vec::Vec,
@@ -59,11 +60,22 @@ use equality_across_groups::{
     tom256::{Affine as Tom256Affine, Config as Tom256Config},
 };
 pub use kvac::bbs_sharp::ecdsa;
+use proof_system::{
+    prelude::{
+        EqualWitnesses, MetaStatement, MetaStatements, Witness, WitnessRef, Witnesses,
+        bbs_plus::{PoKBBSSignatureG1Prover, PoKBBSSignatureG1Verifier},
+    },
+    proof::Proof,
+    proof_spec::ProofSpec,
+    statement::{Statements, ped_comm::PedersenCommitment as PedersenCommitmentStmt},
+    witness::PoKBBSSignatureG1,
+};
+
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
 };
 
@@ -155,12 +167,12 @@ pub struct Swiyu {
     vcs: Option<VerifiedCredential>,
 }
 
-/// A [BBSPresentation] is a blinded version of the [VerifiedCredential]. It contains
-/// a proof that the blinded version has been signed by the [Issuer], and can be
+/// A [BBSPresentation] is a proof of knowledge of the [VerifiedCredential]. It contains
+/// a proof that the presentation has been signed by the [Issuer], and can be
 /// verified by the certificate of the [Issuer].
 #[derive(Clone, CanonicalSerialize, Debug)]
 pub struct BBSPresentation {
-    /// The blinded signature of the [VerifiedCredential], which can be verified
+    /// The proof of knowledge of the [VerifiedCredential], which can be verified
     /// using the certificate of the [Issuer].
     proof: PoKOfSignatureG1Proof<Bls12_381>,
     /// Revealed messages of the [VerifiedCredential], which will prove that the
@@ -179,8 +191,8 @@ pub struct BBSPresentation {
 #[derive(Clone, Debug)]
 pub enum PublicCommitment {
     /// An Open commitment includes the random value, which is the [BlsFr] here.
-    /// It should never be sent to an untrusted party, as they can unblind the
-    /// value with it.
+    /// It should never be sent to an untrusted party, as they can get some knowledge
+    /// of the original value with it.
     Open(BlsFr, BlsG1Affine),
     /// A Closed commitment is stripped of its random value and can safely be shared
     /// with untrusted parties.
@@ -213,13 +225,10 @@ impl CanonicalSerialize for PublicCommitment {
     }
 }
 
-/// An [ECDSAProof] links the ECDSA signature from the [SecureElement] to the [Presentation::blinded]
+/// An [ECDSAProof] links the ECDSA signature from the [SecureElement] to the [BBSPresentation::close]
 /// messages in zero-knowledge.
 /// The commitments are randomized representations of the holder's public key.
 /// The proofs link these commitments to the message to be signed, and between each other.
-/// TODO: bls_comm_pk_x and bls_comm_pk_y should be in the [Presentation] instead of the
-/// blinded messages. Then we must make sure that we can prove that the blinded messages
-/// are actually part of the [VerifiedCredential].
 #[derive(Clone)]
 pub struct ECDSAProof {
     /// A commitment of the public key of the holder to the Tom256 curve.
@@ -230,6 +239,9 @@ pub struct ECDSAProof {
     proof_eq_pk_x: ProofEqDL,
     /// A proof that the y value of the public key of the holder is the same as [BBSPresentation::commitment_pub_y]
     proof_eq_pk_y: ProofEqDL,
+    /// A proof that the commitments used in the above proofs is equal to the x- and y-
+    /// coordinates of the public key stored in the BBS proof.
+    proof_eq_pk_bbs: Proof<Bls12_381>,
 }
 
 impl Issuer {
@@ -332,6 +344,7 @@ impl Verifier {
             self.setup.clone(),
             (&verifier_message).into(),
             &bbs_presentation,
+            &self.certificate,
         );
     }
 }
@@ -472,30 +485,15 @@ impl Swiyu {
     /// that their random values are accessible.
     /// Before sending a [BBSPresentation] to an untrusted entity, one must call
     /// [BBSPresentation::close()] to remove the random values.
-    pub fn blinded_presentation(
+    pub fn bbs_presentation(
         &mut self,
         message: VerifierMessage,
         reveal: Vec<usize>,
     ) -> BBSPresentation {
         let vc = self.vcs.as_ref().expect("No credential yet!");
         let mut messages_and_blindings = vec![
-            // TODO: this is the last part of the ECDSA proof which is not implemented
-            // yet, or where I couldn't find the implementation, neither in Ubique's
-            // code, nor in docknetwork's code.
-            // Without the proof that the blinded public key used to verify the ECDSA signature
-            // is actually in the BBS proof, an important part of the protocol is missing.
-            // However, it does not seem unsurmountable to extend the BBS proofs to allow
-            // for including commitments.
-            // This would then be part of the Interfaces described in the
-            // [IRTF-BBS-Signatures Draft](https://datatracker.ietf.org/doc/draft-irtf-cfrg-bbs-signatures/).
-            MessageOrBlinding::BlindMessageWithConcreteBlinding {
-                message: &vc.messages[0],
-                blinding: BlsFr::zero(),
-            },
-            MessageOrBlinding::BlindMessageWithConcreteBlinding {
-                message: &vc.messages[1],
-                blinding: BlsFr::zero(),
-            },
+            MessageOrBlinding::BlindMessageRandomly(&vc.messages[0]),
+            MessageOrBlinding::BlindMessageRandomly(&vc.messages[1]),
         ];
 
         // Add the first- or last-name, depending on the request.
@@ -678,6 +676,7 @@ impl ECDSAProof {
     pub fn new(
         mut setup: PublicSetup,
         holder_pub: SecP256Affine,
+        vc: VerifiedCredential,
         bbs_presentation: BBSPresentation,
         ecdsa_signature: ecdsa::Signature,
         verifier_message: VerifierMessage,
@@ -753,18 +752,93 @@ impl ECDSAProof {
         )
         .unwrap();
 
+        // Proof that the commitments to x- and y- coordinates correspond to the BBS signature.
+        let mut statements = Statements::<Bls12_381>::new();
+        statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![setup.comm_key_bls.g, setup.comm_key_bls.h],
+            bbs_presentation.commitment_pub_x.affine(),
+        ));
+        statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![setup.comm_key_bls.g, setup.comm_key_bls.h],
+            bbs_presentation.commitment_pub_y.affine(),
+        ));
+        statements.add(
+            PoKBBSSignatureG1Prover::<Bls12_381>::new_statement_from_params(
+                setup.sig_params_g1.clone(),
+                BTreeMap::new(),
+            ),
+        );
+
+        let mut meta_statements = MetaStatements::new();
+        meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
+            vec![(0, 0), (2, 0)]
+                .into_iter()
+                .collect::<BTreeSet<WitnessRef>>(),
+        )));
+        meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
+            vec![(1, 0), (2, 1)]
+                .into_iter()
+                .collect::<BTreeSet<WitnessRef>>(),
+        )));
+
+        let mut witnesses = Witnesses::new();
+        witnesses.add(Witness::PedersenCommitment(vec![
+            vc.messages[0].clone(),
+            bbs_presentation.commitment_pub_x.rand(),
+        ]));
+        witnesses.add(Witness::PedersenCommitment(vec![
+            vc.messages[1].clone(),
+            bbs_presentation.commitment_pub_y.rand(),
+        ]));
+        witnesses.add(PoKBBSSignatureG1::new_as_witness(
+            vc.signature,
+            BTreeMap::from([
+                (0, vc.messages[0]),
+                (1, vc.messages[1]),
+                (2, vc.messages[2]),
+                (3, vc.messages[3]),
+            ]),
+        ));
+
+        let context = Some(b"test".to_vec());
+        let proof_spec = ProofSpec::new(
+            statements.clone(),
+            meta_statements.clone(),
+            vec![],
+            context.clone(),
+        );
+        proof_spec.validate().unwrap();
+
+        let nonce_eq_pk = Some(b"test nonce".to_vec());
+        let proof_eq_pk_bbs = Proof::new::<StdRng, Blake2b512>(
+            &mut setup.rng,
+            proof_spec.clone(),
+            witnesses.clone(),
+            nonce_eq_pk.clone(),
+            Default::default(),
+        )
+        .unwrap()
+        .0;
+
         Self {
             comm_pk: comm_pk.comm,
             proof,
             proof_eq_pk_x,
             proof_eq_pk_y,
+            proof_eq_pk_bbs,
         }
     }
 
     /// Verifies that the commitments to the signature and the public key of the holder
     /// verify the `message` from the verifier. The [BBSPresentation] is used for the commitments
     /// to the holder's public key.
-    pub fn verify(&self, setup: PublicSetup, message: SecP256Fr, presentation: &BBSPresentation) {
+    pub fn verify(
+        &self,
+        mut setup: PublicSetup,
+        message: SecP256Fr,
+        presentation: &BBSPresentation,
+        issuer_pub: &PublicKeyG2<Bls12_381>,
+    ) {
         presentation.assert_closed();
         let mut verifier_transcript = new_merlin_transcript(b"test");
         setup.append_transcript(&mut verifier_transcript);
@@ -817,6 +891,55 @@ impl ECDSAProof {
                 &mut verifier_transcript,
             )
             .expect("DlEQ proff for y position failed");
+
+        // And verify that the given commitments equal the coordinates of the public key
+        // in the BBS signature.
+        let mut verifier_statements = Statements::<Bls12_381>::new();
+        verifier_statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![setup.comm_key_bls.g, setup.comm_key_bls.h],
+            presentation.commitment_pub_x.affine(),
+        ));
+        verifier_statements.add(PedersenCommitmentStmt::new_statement_from_params(
+            vec![setup.comm_key_bls.g, setup.comm_key_bls.h],
+            presentation.commitment_pub_y.affine(),
+        ));
+        verifier_statements.add(PoKBBSSignatureG1Verifier::new_statement_from_params(
+            setup.sig_params_g1.clone(),
+            issuer_pub.clone(),
+            BTreeMap::new(),
+        ));
+
+        let mut meta_statements = MetaStatements::new();
+        meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
+            vec![(0, 0), (2, 0)]
+                .into_iter()
+                .collect::<BTreeSet<WitnessRef>>(),
+        )));
+        meta_statements.add(MetaStatement::WitnessEquality(EqualWitnesses(
+            vec![(1, 0), (2, 1)]
+                .into_iter()
+                .collect::<BTreeSet<WitnessRef>>(),
+        )));
+
+        let context = Some(b"test".to_vec());
+        let verifier_proof_spec = ProofSpec::new(
+            verifier_statements.clone(),
+            meta_statements.clone(),
+            vec![],
+            context.clone(),
+        );
+        verifier_proof_spec.validate().unwrap();
+
+        let nonce_eq_pk = Some(b"test nonce".to_vec());
+        self.proof_eq_pk_bbs
+            .clone()
+            .verify::<StdRng, Blake2b512>(
+                &mut setup.rng,
+                verifier_proof_spec,
+                nonce_eq_pk.clone(),
+                Default::default(),
+            )
+            .expect("Verify Point Equality Proof");
     }
 
     /// Returns the sizes of the different proofs.
@@ -826,6 +949,7 @@ impl ECDSAProof {
             ("proof_scalar", self.proof.proof_minus_zR.compressed_size()),
             ("proof_eqdl_x", self.proof_eq_pk_x.compressed_size()),
             ("proof_eqdl_y", self.proof_eq_pk_y.compressed_size()),
+            ("proof_eq_comm_bbs", self.proof_eq_pk_bbs.compressed_size()),
         ])
     }
 
@@ -871,7 +995,7 @@ impl BBSPresentation {
     /// - the signature can be verified by the certificate
     /// - the signature matches the messages
     /// - the message_strings match the messages
-    /// - TODO: the signature matches the commitment_pub
+    /// - the BBS signature matches the commitment_pub
     pub fn verify(
         &self,
         setup: PublicSetup,
@@ -897,8 +1021,6 @@ impl BBSPresentation {
                 None => return Err(BBSPlusError::IncorrectNoOfShares(*rev_id, 0)),
             }
         }
-
-        // TODO: check that the commitment_pub_x and commitment_pub_y are in the BBS proof.
 
         Ok(())
     }
@@ -1122,7 +1244,7 @@ mod test {
         witness::PoKBBSSignatureG1,
     };
 
-    // A complete tewst of the ECDSA signature verification.
+    // A complete test of the ECDSA signature verification.
     #[test]
     fn sign_verify_msg() -> Result<(), Box<dyn Error>> {
         // Set up parties
@@ -1140,15 +1262,16 @@ mod test {
         // Verifier requests a presentation from the holder
         let message = verifier.create_message();
 
-        // Holder creates a blinded presentation, an ECDSA signature, and a proof.
+        // Holder creates a presentation with a proof of knowledge and zero or more revealed messages.
         // This is of course all done in the Swiyu app, but here we do it step-by-step.
         let presentation = holder
             .swiyu()
-            .blinded_presentation(message.clone(), vec![VerifiedCredential::FIELD_FIRSTNAME]);
+            .bbs_presentation(message.clone(), vec![VerifiedCredential::FIELD_FIRSTNAME]);
         let signature = holder.secure_element().sign(0, message.clone());
         let proof = ECDSAProof::new(
             setup,
             se_kp.key_pub,
+            credential.clone(),
             presentation.clone(),
             signature,
             message.clone(),
@@ -1165,15 +1288,9 @@ mod test {
             presentation_closed.message_string(VerifiedCredential::FIELD_LASTNAME),
             None
         );
+
         Ok(())
     }
-
-    use proof_system::{
-        prelude::{EqualWitnesses, MetaStatement, MetaStatements, Witness, WitnessRef, Witnesses},
-        proof::Proof,
-        proof_spec::ProofSpec,
-        statement::{Statements, ped_comm::PedersenCommitment as PedersenCommitmentStmt},
-    };
 
     /// Proving a pedersen commitment to a scalar in BBS.
     #[test]
@@ -1263,7 +1380,6 @@ mod test {
         ));
 
         let context = Some(b"test".to_vec());
-
         let proof_spec = ProofSpec::new(
             statements.clone(),
             meta_statements.clone(),

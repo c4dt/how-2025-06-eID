@@ -131,3 +131,5 @@ dist
 .ipynb_checkpoints
 
 .vscode
+.local
+.bash_history

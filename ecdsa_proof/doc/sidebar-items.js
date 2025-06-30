@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PublicCommitment"],"mod":["ecdsa"],"struct":["BBSPresentation","ECDSAProof","Issuer","MobilePhone","PublicSetup","SEKeypair","SecureElement","Swiyu","VerifiedCredential","Verifier","VerifierMessage"]};

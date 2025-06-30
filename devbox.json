@@ -19,6 +19,10 @@
       ],
       "clean": [
         "jupyter nbconvert --clear-output --inplace *.ipynb solutions/*.ipynb"
+      ],
+      "doc": [
+        "cd ecdsa_proof; cargo doc -p ecdsa_proof",
+        "rm -rf doc; cp -a target/doc/ecdsa_proof doc"
       ]
     }
   },
