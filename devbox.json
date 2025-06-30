@@ -21,8 +21,8 @@
         "jupyter nbconvert --clear-output --inplace *.ipynb solutions/*.ipynb"
       ],
       "docs": [
-        "( cd ecdsa_proof; cargo doc -p ecdsa_proof )",
-        "rm -rf docs; cp -a ecdsa_proof/target/doc/ecdsa_proof docs"
+        "( cd ecdsa_proof; cargo doc -p ecdsa_proof --no-deps )",
+        "rm -rf docs; cp -a ecdsa_proof/target/doc/ docs; cp index.redirect.html docs/index.html "
       ]
     }
   },
